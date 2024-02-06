@@ -497,7 +497,7 @@ def _line_chart(
     inp = input("save fig? (y/n/q): ")
     if inp.lower() == "y":
         fig.savefig(
-            fname=f"charts/{title}{'_as_%world' if world_data else ''}.jpg", dpi=20
+            fname=f"charts/{title}{'_as_%world' if world_data else ''}.jpg", dpi=200
         )
         print("fig saved", end="\n\n")
 
