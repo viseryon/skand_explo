@@ -1,6 +1,7 @@
 import json
 
 import dataframe_image as dfi
+import numpy as np
 import pandas as pd
 import requests
 from matplotlib import pyplot as plt
@@ -531,6 +532,77 @@ def _players_vs_world_data_for_chart(world_share):
     return prepared_for_chart
 
 
+# provinces data
+
+
+def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
+
+    dates = list(data.keys())
+    master = pd.DataFrame()
+    for date in dates:
+        provinces = {}
+        provs = [prov_num for prov_num in data[date] if prov_num.isnumeric()]
+        (
+            owner,
+            culture,
+            religion,
+            tax,
+            prod,
+            manp,
+            trade_good,
+            buildings_value,
+            improve_count,
+        ) = ([], [], [], [], [], [], [], [], [])
+        for prov in provs:
+            prov = data[date][prov]
+            owner.append(prov.get("owner", np.nan))
+            culture.append(prov.get("culture", np.nan))
+            religion.append(prov.get("religion", np.nan))
+            tax.append(prov.get("base_tax", np.nan))
+            prod.append(prov.get("base_production", np.nan))
+            manp.append(prov.get("base_manpower", np.nan))
+            trade_good.append(prov.get("trade_goods", np.nan))
+            buildings_value.append(prov.get("buildings_value", np.nan))
+            improve_count.append(prov.get("improveCount", np.nan))
+
+        provinces["id"] = provs
+        provinces["year"] = date
+        provinces["tag"] = owner
+        provinces["culture"] = culture
+        provinces["religion"] = religion
+        provinces["tax"] = tax
+        provinces["prod"] = prod
+        provinces["manp"] = manp
+        provinces["trade_good"] = trade_good
+        provinces["buildings_value"] = buildings_value
+        provinces["improve_count"] = improve_count
+        df = pd.DataFrame(provinces)
+
+        if master.empty:
+            master = df
+        else:
+            master = pd.concat([master, df])
+
+    master = master.astype(
+        {
+            "id": int,
+            "tax": float,
+            "prod": float,
+            "manp": float,
+            "improve_count": float,
+        }
+    )
+
+    master['dev'] = master.tax + master.prod + master.manp
+
+    return master
+
+
+def _export_provinces_data(data: pd.DataFrame) -> None:
+    data.to_csv("provinces_data.csv", index=False)
+    print("exported")
+
+
 # main loop
 
 
@@ -655,6 +727,15 @@ def country_data_segment(data, tags_colours) -> None:
             return
 
 
+def provinces_data_segment(data: pd.DataFrame) -> None:
+    while True:
+        inp = input("export provinces data (y/n/q): ")
+        if inp == "y":
+            _export_provinces_data(data)
+        elif inp == "q":
+            return
+
+
 def main():
     tags = get_tags()
     api_num = bool(int(input("\nchoose api (1 -> alan, 0 -> michal): ")))
@@ -665,10 +746,18 @@ def main():
     tags_colours = None
 
     while True:
-        inp = input("\ntradenodes or country_data (0, 1, q): ")
+        inp = input("\nprovinces_data/tradenodes or country_data (0, 1, q): ")
         print()
         if inp == "0":
-            ...
+            if not global_provinces_data:
+                print("requesting data...")
+                data = get_global_provinces_data(saves, api_key)
+
+                print("processing data...")
+                global_provinces_data = prepare_provinces_data(data)
+
+            provinces_data_segment(global_provinces_data)
+
         elif inp == "1":
             if not global_countries_data or not tags_colours:
                 print("requesting data...")
@@ -676,6 +765,9 @@ def main():
 
                 print("processing data...")
                 global_countries_data, tags_colours = prepare_countries_data(data, tags)
+                
+                with open('tags_colours.json', 'w') as f:
+                    json.dump(tags_colours, f)
 
             country_data_segment(global_countries_data, tags_colours)
 
