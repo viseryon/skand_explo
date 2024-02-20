@@ -593,7 +593,7 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
         }
     )
 
-    master['dev'] = master.tax + master.prod + master.manp
+    master['dev'] = master['tax'] + master['prod'] + master['manp']
 
     return master
 
