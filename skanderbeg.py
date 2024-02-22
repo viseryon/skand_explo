@@ -552,7 +552,9 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
             trade_good,
             buildings_value,
             improve_count,
-        ) = ([], [], [], [], [], [], [], [], [])
+            casualties,
+            prosperity,
+        ) = ([], [], [], [], [], [], [], [], [], [], [])
         for prov in provs:
             prov = data[date][prov]
             owner.append(prov.get("owner", np.nan))
@@ -564,6 +566,8 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
             trade_good.append(prov.get("trade_goods", np.nan))
             buildings_value.append(prov.get("buildings_value", np.nan))
             improve_count.append(prov.get("improveCount", np.nan))
+            casualties.append(prov.get("casualties", np.nan))
+            prosperity.append(prov.get("prosperity", np.nan))
 
         provinces["id"] = provs
         provinces["year"] = date
@@ -576,6 +580,8 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
         provinces["trade_good"] = trade_good
         provinces["buildings_value"] = buildings_value
         provinces["improve_count"] = improve_count
+        provinces["casualties"] = casualties
+        provinces["prosperity"] = prosperity
         df = pd.DataFrame(provinces)
 
         if master.empty:
@@ -590,10 +596,12 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
             "prod": float,
             "manp": float,
             "improve_count": float,
+            "casualties": int,
+            "prosperity": float,
         }
     )
 
-    master['dev'] = master['tax'] + master['prod'] + master['manp']
+    master["dev"] = master["tax"] + master["prod"] + master["manp"]
 
     return master
 
@@ -765,8 +773,8 @@ def main():
 
                 print("processing data...")
                 global_countries_data, tags_colours = prepare_countries_data(data, tags)
-                
-                with open('tags_colours.json', 'w') as f:
+
+                with open("tags_colours.json", "w") as f:
                     json.dump(tags_colours, f)
 
             country_data_segment(global_countries_data, tags_colours)
