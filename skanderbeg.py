@@ -536,6 +536,15 @@ def _players_vs_world_data_for_chart(world_share):
 
 
 def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
+    """
+    prepares province data from skanderbeg
+
+    Args:
+        data (dict[int, dict]): dict with raw province data from skanderbeg
+
+    Returns:
+        pd.DataFrame: dataframe with statistics for each province for each year
+    """
 
     dates = list(data.keys())
     master = pd.DataFrame()
@@ -631,7 +640,15 @@ def _inp() -> str:
             return value
 
 
-def country_data_segment(data, tags_colours) -> None:
+def country_data_segment(data, tags_colours: dict[str, str]) -> None:
+    """
+    loop with country data analysis segment
+
+    Args:
+        data (dict[int, dict]): prepared country data
+        tags_colours (dict[str, str]): dict with players' tags and corresponding colours
+    """
+
     while True:
         statistic = _inp()
 
@@ -736,6 +753,13 @@ def country_data_segment(data, tags_colours) -> None:
 
 
 def provinces_data_segment(data: pd.DataFrame) -> None:
+    """
+    loop with province data analysis segment
+
+    Args:
+        data (pd.DataFrame): prepared province data
+    """
+
     while True:
         inp = input("export provinces data (y/n/q): ")
         if inp == "y":
@@ -745,6 +769,12 @@ def provinces_data_segment(data: pd.DataFrame) -> None:
 
 
 def main():
+    """
+    main function
+
+    main function with the interface, can choose which api key to use and what to analyse
+    """
+    
     tags = get_tags()
     api_num = bool(int(input("\nchoose api (1 -> alan, 0 -> michal): ")))
     saves, api_key = get_saves(my_api=api_num)
