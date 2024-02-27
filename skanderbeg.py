@@ -605,7 +605,7 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
             "prod": float,
             "manp": float,
             "improve_count": float,
-            "casualties": int,
+            "casualties": float,
             "prosperity": float,
         }
     )
