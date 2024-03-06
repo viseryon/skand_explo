@@ -806,6 +806,7 @@ def main():
 
                 with open("tags_colours.json", "w") as f:
                     json.dump(tags_colours, f)
+                print('tags_colours.json saved')
 
             country_data_segment(global_countries_data, tags_colours)
 
