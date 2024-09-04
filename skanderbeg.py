@@ -431,7 +431,7 @@ def _export_table(
     )
 
     formater = formater.set_caption(
-        f"{title}{f' as % of world {title}' if world_data else ''}"
+        f"{title}{f""" as % of world's {title}' if world_data else """}"
     )
 
     subset = pd.IndexSlice[[indx for indx in full.index if indx != "WORLD"], :]
