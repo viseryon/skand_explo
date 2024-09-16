@@ -430,9 +430,8 @@ def _export_table(
         ]
     )
 
-    formater = formater.set_caption(
-        f"{title}{f""" as % of world's {title}' if world_data else """}"
-    )
+    caption = f" as % of world's {title}" if world_data else ""
+    formater = formater.set_caption(title + caption)
 
     subset = pd.IndexSlice[[indx for indx in full.index if indx != "WORLD"], :]
     formater = formater.highlight_max(color="darkgreen", subset=subset)
