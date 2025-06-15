@@ -17,6 +17,9 @@ CHARTS_PATH = ROOT_PATH / "charts"
 CONFIG_PATH = ROOT_PATH / "config"
 OUTPUT_PATH = ROOT_PATH / "output"
 
+CHARTS_PATH.mkdir(exist_ok=True)
+OUTPUT_PATH.mkdir(exist_ok=True)
+
 ALL_STATS = {
     "buildings_value",
     "totalRulerManaGain",
