@@ -1,0 +1,34 @@
+dodac tradenode data
+
+world_stats:
+single
+- max_manpower
+- total_navy
+- buildings_value
+- dev_clicks
+- total_land_units_killed
+- total_land_units_lost
+- total_naval_units_killed
+- total_naval_units_lost
+- real_development
+- total_development
+- treasury
+- interest
+- total_loans
+- total_army
+- total_casualties 64891
+- battleCasualties 45196
+- attritionCasualties 19688
+- total_stackwiped 
+
+dict
+- total
+'total_mana_generated': {'val': '7182<BR>1981/2093/3108', 's': 7182},
+ 'total_mana_spent': {'val': '5861<BR>1614/1513/2734', 's': 5861},
+
+list
+- income
+    1. tax
+    2. prod
+    3. trade
+- expenses
