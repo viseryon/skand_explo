@@ -1,4 +1,6 @@
 import json
+import pickle
+from dataclasses import dataclass
 from pathlib import Path
 
 import dataframe_image as dfi
@@ -16,140 +18,113 @@ ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 CHARTS_PATH = ROOT_PATH / "charts"
 CONFIG_PATH = ROOT_PATH / "config"
 OUTPUT_PATH = ROOT_PATH / "output"
+CACHE_PATH = ROOT_PATH / "cache"
 
 CHARTS_PATH.mkdir(exist_ok=True)
 OUTPUT_PATH.mkdir(exist_ok=True)
+CACHE_PATH.mkdir(exist_ok=True)
 
-ALL_STATS = {
-    "buildings_value",
-    "totalRulerManaGain",
-    "real_development",
-    "total_development",
-    "technology",
-    "gp_score",
-    "naval_strength",
-    "warscore_cost",
-    "provinces",
-    "forts",
-    "score_ranking",
-    "prestige",
-    "stability",
-    "treasury",
-    "monthly_income",
-    "army_tradition",
-    "income",
-    "subsidies",
-    "inc_no_subs",
-    "interest",
-    "expense",
-    "expenses",
-    "army_professionalism",
-    "government_reforms",
-    "manpower",
-    "max_manpower",
-    "total_army",
-    "army_size",
-    "total_ships",
-    "total_navy",
-    "total_casualties",
-    "battleCasualties",
-    "attritionCasualties",
-    "navalCasualties",
-    "innovativeness",
-    "manpower_dev",
-    "armyStrength",
-    "totalManaGainAverage",
-    "qualityScore",
-    "FL",
-    "shock_damage",
-    "fire_damage",
-    "land_morale",
-    "naval_morale",
-    "discipline",
-    "at",
-    "addedTraditionDisci",
-    "score",
-    "manpower_percentage",
-    "manpower_dev_ratio",
-    "total_mana_spent",
-    "total_mana_spent_on_deving",
-    "total_mana_spent_on_barrages",
-    "total_mana_spent_on_culture_converting",
-    "total_mana_spent_on_reducing_we",
-    "total_mana_spent_on_hiring_generals",
-    "total_mana_spent_on_force_marching",
-    "total_mana_spent_on_militarization",
-    "total_mana_spent_on_scorching",
-    "total_mana_spent_on_stabbing_up",
-    "total_mana_on_teching_up",
-    "average_mana_spent_on_tech",
-    "total_mana_on_teching_up_ex_mil",
-    "total_mana_spent_on_assaulting",
-    "total_mana_spent_on_coring",
-    "spent_total",
-    "spent_on_advisors",
-    "spent_on_interest",
-    "spent_on_states",
-    "spent_on_subsidies",
-    "spent_on_army_recruitment",
-    "spent_on_loans",
-    "spent_on_gifts",
-    "spent_on_forts",
-    "spent_on_army_maintenance",
-    "spent_on_navies",
-    "spent_on_buildings",
-    "total_development_ratio",
-    "real_development_ratio",
-    "income_ratio",
-    "fdp",
-    "merc_fl",
-    "manpower_recovery",
-    "buildings_value_avg",
-    "dev_ratio",
-    "deving_stats",
-    "deving_ratios",
-    "adjustedEffectiveDisci",
-    "quantityScore",
-    "adjustedArmyStrength",
-    "strengthTest",
-    "overall_strength",
-    "armyStrengthRatio",
-    "army_str_to_dev",
-    "average_monarch_total",
-    "average_monarch",
-    "weighted_avg_monarch",
-    "technologyTD",
-    "distinct_score",
-    "quantityScore_ratio",
-    "average_autonomy",
-    "spent_on_forts_build",
-    "dev_total",
-    "manpower_recoveryy",
-    "income_stats",
-}
+ALL_STATS = Path(CONFIG_PATH / "available_stats.txt").read_text(encoding="utf-8").splitlines()
+
+
+class Analyzer:
+    def __init__(self):
+        self._api_key = (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
+        self.save_dates = None
+        self._downloaded_country_data = False
+        self._downloaded_province_data = False
+        self.saves: dict = {}
+
+    def read_cached_data(self):
+        cached_saves = Path(CACHE_PATH / "saves.pkl")
+        if cached_saves.exists():
+            with cached_saves.open("rb") as f:
+                self.saves = pickle.load(f)
+            return self.saves
+        return {}
+
+    def get_save_metadata(self):
+        if self.saves:
+            return self.saves
+
+        params = {"key": self._api_key, "scope": "fetchUserSaves"}
+        response = requests.get(SKANDERBEG_LINK, params=params, timeout=10).json()
+
+        if response.status_code != requests.codes.all_good:
+            raise requests.exceptions.HTTPError
+
+        saves = {}
+        for save_data in response.json():
+            year = int(save_data["date"][:4])
+            saves[year] = Save(
+                **save_data,
+                year=year,
+            )
+
+        self.save_dates = saves.keys()
+        self.saves = saves
+        return saves
+
+    def get_country_data(self, *, force_offline: bool = False):
+        if self._downloaded_country_data:
+            return self.saves
+
+        if not self.saves and not force_offline:
+            self.get_save_metadata()
+
+        self.saves.update(self.read_cached_data())
+
+        if force_offline:
+            return self.saves
+
+        saves_to_download = {date: save for date, save in self.saves.items() if not save.data}
+
+        for date, save in saves_to_download.items():
+            params = {
+                "scope": "getSaveDataDump",
+                "save": save.hash,
+                "api_key": self._api_key,
+                "type": "countriesData",
+            }
+            response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
+            if response.status_code != requests.codes.all_good:
+                raise requests.exceptions.HTTPError
+
+            response = response.json()
+            self.saves[date].data = response
+
+        self._downloaded_country_data = True
+
+        with Path(CACHE_PATH / "saves.pkl").open("wb") as f:
+            pickle.dump(self.saves, f)
+
+        return self.saves
+
+
+@dataclass
+class Save:
+    id: str
+    hash: str
+    timestamp: str
+    name: str
+    uploadedBy: str
+    version: str
+    player: str
+    multiplayer: str
+    date: str
+    customname: str
+    game: str
+    mods: str
+    linkedSheet: str
+    options: str
+    lastVisited: str
+    viewCount: str
+    augmentedCampaign: str
+    year: int
+    data: dict | None = None
+
 
 # data request
-
-
-def get_apis():
-    with (CONFIG_PATH / "apis.json").open(encoding="utf-8") as f:
-        return json.load(f)
-
-
-def get_saves(*, my_api: bool = True) -> tuple[dict[int, str], str]:
-    """Get save ids and correct api key"""
-    apis = get_apis()
-
-    api_key = apis["alan"] if my_api else apis["michal"]
-
-    params = {"key": api_key, "scope": "fetchUserSaves"}
-    r = requests.get(SKANDERBEG_LINK, params=params).json()
-    saves = {}
-
-    for info in r:
-        saves[int(info["date"][:4])] = info["hash"]
-
-    return saves, api_key
 
 
 def get_global_provinces_data(

@@ -1,6 +1,7 @@
 __pycache__
 /charts
 /output
-/config/apis.json
+/cache
+/config/api.txt
 /config/countries.txt
 /.venv
