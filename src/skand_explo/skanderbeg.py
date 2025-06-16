@@ -60,6 +60,7 @@ class Analyzer:
         self._downloaded_province_data = False
         self.saves: dict = {}
         self.force_offline = force_offline
+        self._tag_coulours = None
 
     def read_cached_data(self):
         cached_saves = Path(CACHE_PATH / "saves.pkl")
@@ -98,6 +99,12 @@ class Analyzer:
             self.get_save_metadata()
         return self.saves[self.current_year]
 
+    @property
+    def tag_colours(self):
+        if self._tag_coulours:
+            return self._tag_coulours
+        return None
+
     def get_save_metadata(self):
         if self.saves:
             return self.saves
@@ -107,7 +114,7 @@ class Analyzer:
             return self.saves
 
         params = {"key": self._api_key, "scope": "fetchUserSaves"}
-        response = requests.get(SKANDERBEG_LINK, params=params, timeout=10).json()
+        response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
 
         if response.status_code != requests.codes.all_good:
             raise requests.exceptions.HTTPError
@@ -147,26 +154,35 @@ class Analyzer:
         if force_offline:
             return self.saves
 
-        saves_to_download = {date: save for date, save in self.saves.items() if not save.data}
+        if data_type == "countriesData":
+            saves_to_download = {
+                date: save for date, save in self.saves.items() if not save.country_data
+            }
+        elif data_type == "provincesData":
+            saves_to_download = {
+                date: save for date, save in self.saves.items() if not save.provinces_data
+            }
+        else:
+            raise ValueError
 
         for date, save in saves_to_download.items():
             params = {
                 "scope": "getSaveDataDump",
-                "save": save.id,
-                "api_key": self._api_key,
+                "save": save.hash,
+                "key": self._api_key,
                 "type": data_type,
             }
             response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
-            if response.status_code != requests.codes.all_good:
+            if response.status_code != requests.codes.all_good or response.text == "Err":
                 raise requests.exceptions.HTTPError
 
             response = response.json()
 
             if data_type == "countriesData":
-                self.saves[date].country_data = response["countriesData"]
+                self.saves[date].country_data = response
                 self._downloaded_country_data = True
             elif data_type == "provincesData":
-                self.saves[date].provinces_data = response["provincesData"]
+                self.saves[date].provinces_data = response
                 self._downloaded_province_data = True
 
         with Path(CACHE_PATH / "saves.pkl").open("wb") as f:
@@ -174,53 +190,58 @@ class Analyzer:
 
         return self.saves
 
+    def _process_country_data(self):
+        # overwrite tags (with current ones) that players used to form other tags
+        # this will ensure continuity of tags in the game
+        # and easier access to data
 
-# countries data
+        # first check the current save what countries players formed
+        reformations = {}
+        tag_colours = {}
 
+        for tag in self.tags:
+            reforms: list[dict] | None = self.current_save.country_data[tag].get("reformations")
 
-def prepare_countries_data(data: dict[int, dict], tags: list[str]) -> tuple[dict, dict]:
-    """Prepares countries data by changing tags to current ones"""
-    save_dates = data.keys()
-    save_dates = sorted(save_dates)
-    curr_save = max(save_dates)
+            if reforms:
+                for reform in reforms:
+                    prev_tag = reform["tag"]
+                    formation_year = int(reform["date"][:4])
 
-    years_tags = {year: [] for year in save_dates}
-    tag_swaps = {}
-    colours = {}
-    for tag in tags:
-        reforms = data[curr_save][tag].get("reformations")
+                    reformations.setdefault(tag, [])
+                    reformations[tag].append((prev_tag, formation_year))
 
-        if reforms:
-            for reform in reforms:
-                prev_tag = reform["tag"]
-                formation_year = int(reform["date"][:4])
+            # save current colour of the tag
+            tag_colours[tag] = self.current_save.country_data[tag]["hex"]
 
-                tag_swaps.setdefault(tag, [])
-                tag_swaps[tag].append((prev_tag, formation_year))
-        else:
-            for year, val in years_tags.items():
-                val.append(tag)
+        self._tag_coulours = tag_colours
 
-        colours[tag] = data[curr_save][tag]["hex"]
+        # algorithm to relabel tags
+        # for each tag that was formed, check all saves
+        for current_tag, formation in reformations.items():
+            for save_date in sorted(self.saves):
+                for prev_tag, formation_year in formation:
+                    if save_date == 1444:
+                        prev_tag_data = self.saves[save_date].country_data[prev_tag]
+                        self.saves[save_date].country_data[current_tag] = prev_tag_data
 
-    for curr_tag, tag_formation in tag_swaps.items():
-        tag_formation = sorted(tag_formation, key=lambda x: x[1])
-        tag_formation.append((curr_tag, 2_000))
-        for save_date in save_dates:
-            for prev_tag, formation_year in tag_formation:
-                if save_date == 1444:
-                    new_tag = prev_tag
-                    break
+                    # income_stats fix
+                    # this has to be done separately
+                    # income_stats is a different structure than other stats
+                    if formation_year <= save_date:
+                        income_stats = (
+                            self.saves[save_date].country_data[current_tag].get("income_stats", {})
+                        )
+                        prev_tag_data = self.saves[save_date].country_data[prev_tag]
 
-                if formation_year > save_date:
-                    new_tag = prev_tag
-                    break
+                        income_stats.update(prev_tag_data["income_stats"])
+                        prev_tag_data["income_stats"] = income_stats
 
-            data[save_date][curr_tag] = data[save_date][new_tag]
-            if new_tag != curr_tag:
-                del data[save_date][new_tag]
+                    if formation_year >= save_date:
+                        prev_tag_data = self.saves[save_date].country_data[prev_tag]
+                        self.saves[save_date].country_data[current_tag] = prev_tag_data
 
-    return data, colours
+                    # delete previous tag data, so it doesn't pollute the data
+                    del self.saves[save_date].country_data[prev_tag]
 
 
 def get_country_statistic(
