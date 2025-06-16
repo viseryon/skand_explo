@@ -1,14 +1,13 @@
 import json
 import pickle
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
-import dataframe_image as dfi
 import numpy as np
 import pandas as pd
 import requests
 from matplotlib import pyplot as plt
-from matplotlib.ticker import FuncFormatter, StrMethodFormatter
 
 plt.style.use("dark_background")
 
@@ -25,6 +24,9 @@ OUTPUT_PATH.mkdir(exist_ok=True)
 CACHE_PATH.mkdir(exist_ok=True)
 
 ALL_STATS = Path(CONFIG_PATH / "available_stats.txt").read_text(encoding="utf-8").splitlines()
+
+# TODO: docs
+# TODO: type hints
 
 
 @dataclass
@@ -50,10 +52,20 @@ class Save:
     country_data: dict | None = None
     provinces_data: dict | None = None
 
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"year={self.year}, player={self.player}, hash={self.hash}, "
+            f"country_data={self.country_data is not None}, "
+            f"provinces_data={self.provinces_data is not None})"
+        )
+
 
 class Analyzer:
-    def __init__(self, *, force_offline: bool = False):
-        self._api_key = (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
+    def __init__(self, *, api_key: str | None = None, force_offline: bool = False):
+        self._api_key = (
+            api_key or (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
+        )  # TODO: replace with txt
         self._save_dates = None
         self._tags = None
         self._downloaded_country_data = False
@@ -116,7 +128,7 @@ class Analyzer:
         params = {"key": self._api_key, "scope": "fetchUserSaves"}
         response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
 
-        if response.status_code != requests.codes.all_good:
+        if response.status_code != requests.codes.all_good or response.text == "Err":
             raise requests.exceptions.HTTPError
 
         saves = {}
@@ -134,7 +146,9 @@ class Analyzer:
         if self._downloaded_country_data:
             return self.saves
 
-        return self.get_data(data_type="countriesData", force_offline=force_offline)
+        self.get_data(data_type="countriesData", force_offline=force_offline)
+        self._process_country_data()
+        return self.saves
 
     def get_provinces_data(self, *, force_offline: bool = False):
         if self._downloaded_province_data:
@@ -200,7 +214,9 @@ class Analyzer:
         tag_colours = {}
 
         for tag in self.tags:
-            reforms: list[dict] | None = self.current_save.country_data[tag].get("reformations")
+            reforms: list[dict] | None = self.current_save.country_data[tag].get(
+                "reformations",
+            )  # TODO: resolve this warning
 
             if reforms:
                 for reform in reforms:
@@ -211,7 +227,9 @@ class Analyzer:
                     reformations[tag].append((prev_tag, formation_year))
 
             # save current colour of the tag
-            tag_colours[tag] = self.current_save.country_data[tag]["hex"]
+            tag_colours[tag] = self.current_save.country_data[tag][
+                "hex"
+            ]  # TODO: resolve this warning
 
         self._tag_coulours = tag_colours
 
@@ -243,281 +261,66 @@ class Analyzer:
                     # delete previous tag data, so it doesn't pollute the data
                     del self.saves[save_date].country_data[prev_tag]
 
+    # selecting data
+    def get_statistic(
+        self,
+        statistic: str,
+        *,
+        tags: list[str] | None = None,
+        include_world: bool = True,
+    ):
+        if tags is None:
+            tags = self.tags
+        # TODO: include world, sum of all tags for specific date
+        dates = []
+        chosen_tags = {tag: [] for tag in tags}
 
-def get_country_statistic(
-    statistic: str,
-    data: dict[int, dict],
-    tags: list[str],
-) -> tuple:
-    """Get time series of a statistic for tags"""
-    dates = data.keys()
-    dates = sorted(dates)
+        # special case for income_stats
+        if statistic == "income_stats":
+            return self._get_statistic__income_stats(tags=tags)
 
-    if statistic == "income_stats":
-        return _income_stats(data, tags)
+        for date, save_data in self.saves.items():
+            dates.append(date)
+            country_data = save_data.country_data
 
-    country_stats = {tag: {"dates": [], "stats": []} for tag in tags}
+            for tag, tag_stats in chosen_tags.items():
+                stat = country_data[tag].get(statistic, pd.NA)
+                tag_stats.append(stat)
 
-    for date in dates:
-        vals = data[date]
+        return pd.DataFrame(data=chosen_tags, index=dates).astype("float64", errors="ignore")
 
+    def _get_statistic__income_stats(self, tags: list[str]) -> pd.DataFrame:
+        series_to_concat = []
         for tag in tags:
-            stat = vals[tag].get(statistic)
-            if stat == "0.001" or stat == "0" or stat == "1" or stat == "1000":
-                stat = None
-            country_stats[tag]["dates"].append(date)
-            country_stats[tag]["stats"].append(stat if stat == None else float(stat))
+            data = self.current_save.country_data[tag]["income_stats"]  # TODO: resolve this warning
+            series = pd.Series(data=data, name=tag)
+            series.index = series.index.astype("int64")
+            series_to_concat.append(series)
 
-    return dates, country_stats, None
-
-
-def _income_stats(data, tags):
-    dates = data.keys()
-    dates = sorted(dates)
-
-    income_stats = {}
-    for date in dates:
-        vals = data[date]
-
-        for tag in tags:
-            stat = vals[tag].get("income_stats")
-
-            if not stat:
-                continue
-
-            income_stats.setdefault(tag, {})
-            income_stats[tag].update({int(year): v for year, v in stat.items()})
-
-    income_stats = {
-        tag: {"dates": list(v.keys()), "stats": list(v.values())} for tag, v in income_stats.items()
-    }
-
-    tmp = {}
-    for tag, vals in income_stats.items():
-        tmp[tag] = {k: v for k, v in zip(vals["dates"], vals["stats"], strict=False)}
-
-    country_stats = {}
-
-    dates[0] = 1445
-    for date in dates:
-        for tag in tags:
-            country_stats.setdefault(tag, {"dates": list(), "stats": list()})
-            country_stats[tag]["dates"].append(date - 1)
-            country_stats[tag]["stats"].append(tmp[tag].get(date))
-
-    dates[0] = 1444
-    return dates, country_stats, income_stats
-
-
-def _calculate_growth_rates(df: pd.DataFrame) -> pd.DataFrame:
-    years = df.columns
-    mx_year = years.max()
-    mn_year = years.min()
-
-    growths = pd.DataFrame()
-    for i in range(len(df.columns) - 1):
-        start_date, end_date = int(years[i]), int(years[i + 1])
-        start, end = df[start_date], df[end_date]
-        years_diff = end_date - start_date
-        growth = (end / start) ** (1 / years_diff) - 1
-
-        col_title = str(years_diff)
-        while col_title in growths:
-            col_title += " "
-
-        growths[col_title] = growth
-
-    full_growth = (df[mx_year] / df[mn_year]) ** (1 / (mx_year - mn_year)) - 1
-    growths[f"{mx_year - mn_year} "] = full_growth
-
-    return growths
-
-
-def _combine_vals_and_growth_rates(
-    vals: pd.DataFrame,
-    growths: pd.DataFrame,
-) -> pd.DataFrame:
-    """Combines df of values with df of growth rates"""
-    full_df = pd.DataFrame()
-
-    for (k1, v1), (k2, v2) in zip(vals.items(), growths.items(), strict=False):
-        full_df[k1] = v1
-        full_df[k2] = v2
-
-    return full_df
-
-
-def _make_table(data: dict[str, dict], dates: list[int]) -> pd.DataFrame:
-    """Creates table with tags and statistic values"""
-    df = pd.DataFrame(
-        [[stat for stat in vals["stats"]] for tag, vals in data.items()],
-        index=data,
-        columns=dates,
-    )
-    df = df.round(2)
-    df = df.sort_index(axis=1)
-
-    return df
-
-
-def _export_table(
-    vals_and_growths: pd.DataFrame,
-    colours: dict[str, str],
-    title: str,
-    year,
-    world_data=False,
-) -> None:
-    """Make it beautiful and export df to png"""
-    full = vals_and_growths
-
-    if world_data:
-        nr_formats = dict.fromkeys(full.keys(), "{:,.4%}")
-    else:
-        nr_formats = {x: "{:,.1f}" if int(x) > 1_000 else "{:.1%}" for x in full.keys()}
-
-    full = full.sort_values(full.columns[-1], ascending=False)
-
-    colours_for_index = {k: f"background-color: black; color: {v}" for k, v in colours.items()}
-
-    formater = full.style
-    formater = formater.set_properties(
-        **{"background-color": "black", "color": "white"},
-    )
-
-    formater = formater.map_index(
-        lambda x: colours_for_index.get(x, "background-color: black; color: white"),
-        axis=0,
-    )
-    formater = formater.map_index(
-        lambda x: "background-color: black; color: white; font-size: 125%",
-        axis=1,
-    )
-
-    formater = formater.set_table_styles(
-        [
-            {
-                "selector": "th",
-                "props": [
-                    ("background-color", "black"),
-                    ("font-size", "125%"),
-                ],
-            },
-            {
-                "selector": "caption",
-                "props": [
-                    ("background-color", "black"),
-                    ("color", "white"),
-                    ("font-size", "175%"),
-                ],
-            },
-        ],
-    )
-
-    caption = f" as % of world's {title}" if world_data else ""
-    formater = formater.set_caption(title + caption)
-
-    subset = pd.IndexSlice[[indx for indx in full.index if indx != "WORLD"], :]
-    formater = formater.highlight_max(color="darkgreen", subset=subset)
-    formater = formater.highlight_min(color="darkred", subset=subset)
-
-    formater = formater.format(nr_formats)
-
-    dfi.export(
-        formater,
-        CHARTS_PATH / f"{title}_by_{year}{'_as_%world' if world_data else ''}.png",
-        dpi=200,
-    )
-
-
-def _line_chart(
-    dates: list[int],
-    country_stats: dict[str, dict[str, list[int]]],
-    tags_colours: dict[str, str],
-    title: str,
-    only_save=False,
-    world_data=False,
-) -> None:
-    """Make line chart of chosen statistic"""
-    fig, ax = plt.subplots(figsize=(13, 7))
-    for tag, vals in country_stats.items():
-        ax.plot(vals["dates"], vals["stats"], color=tags_colours[tag])
-
-        if world_data:
-            annotation = f"{tag} | {vals['stats'][-1]:.4%}"
-        else:
-            annotation = f"{tag} | {vals['stats'][-1]:_.2f}"
-
-        ax.annotate(
-            f"{annotation}",
-            (max(dates), vals["stats"][-1]),
-            fontsize=10,
-            color=tags_colours[tag],
-            bbox=dict(facecolor="black", edgecolor="white", boxstyle="round"),
+        return pd.concat(series_to_concat, axis="columns", sort=True).astype(
+            "float64",
+            errors="ignore",
         )
 
-    ax.set_yscale("log")
-    formatter = FuncFormatter(lambda y, pos: f"{y:_.2f}")
-    ax.yaxis.set_major_formatter(formatter)
-    ax.yaxis.set_minor_formatter(formatter)
-    ax.legend(country_stats.keys(), loc="upper left")
-    ax.set_title(f"{title}{f' as % of world {title}' if world_data else ''}")
-    ax.set_xticks(dates)
 
-    if world_data:
-        plt.gca().yaxis.set_major_formatter(StrMethodFormatter("{x:.4%}"))
+def create_df_with_cagr_values(data: pd.DataFrame) -> pd.DataFrame:
+    data = data.sort_index(axis="columns")
 
-    ax.grid(visible=True, axis="y", alpha=0.25)
-    fig.tight_layout()
+    min_year = data.columns.min()
+    max_year = data.columns.max()
 
-    if only_save:
-        fig.savefig(
-            fname=CHARTS_PATH / f"{title}{'_as_%world' if world_data else ''}.jpg",
-            dpi=200,
-        )
-        print("fig saved", end="\n\n")
-        return
+    for i, (start, end) in enumerate(pairwise(data), start=0):
+        year_diff = end - start  # TODO: resolve this warning
+        period_cagr = (data[end] / data[start]) ** (1 / year_diff) - 1
+        data.insert(2 * i + 1, year_diff, period_cagr, allow_duplicates=True)
 
-    fig.show()
-
-    inp = input("save fig? (y/n/q): ")
-    if inp.lower() == "y":
-        fig.savefig(
-            fname=CHARTS_PATH / f"{title}{'_as_%world' if world_data else ''}.jpg",
-            dpi=200,
-        )
-        print("fig saved", end="\n\n")
-
-    return
+    total_year_diff = max_year - min_year
+    total_cagr = (data[max_year] / data[min_year]) ** (1 / total_year_diff) - 1
+    data.insert(len(data.columns), total_year_diff, total_cagr)
+    return data
 
 
-def world_data(statistic: str, global_countries_data: dict):
-    data = {}
-    for date, val in global_countries_data.items():
-        data[date] = {"tags": (tag for tag in val if len(tag) == 3)}
-        year_value = 0
-
-        for tag in data[date]["tags"]:
-            v = val[tag].get(statistic, 0)
-            year_value += float(v)
-
-        data[date] = [year_value]
-
-    df = pd.DataFrame(data, index=["WORLD"])
-    df = df.sort_index(axis=1)
-
-    return df
-
-
-def _players_vs_world_data_for_chart(world_share):
-    dates = world_share.columns
-    prepared_for_chart = {}
-    for tag, vals in world_share.T.items():
-        prepared_for_chart[tag] = {"stats": vals.values.tolist(), "dates": dates}
-
-    return prepared_for_chart
-
-
-# provinces data
+# TODO: provinces data
 
 
 def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
@@ -604,7 +407,7 @@ def _export_provinces_data(data: pd.DataFrame) -> None:
     print("exported")
 
 
-# main loop
+# TODO: main loop
 
 
 def _inp() -> str:
@@ -765,6 +568,7 @@ def provinces_data_segment(data: pd.DataFrame) -> None:
             return
 
 
+# TODO: rewrite the main function
 def main():
     """Main function
 
