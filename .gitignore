@@ -3,5 +3,6 @@ __pycache__
 /output
 /cache
 /config/api.txt
+/config/apis.json
 /config/countries.txt
 /.venv

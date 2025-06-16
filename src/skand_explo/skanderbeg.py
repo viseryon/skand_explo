@@ -27,80 +27,6 @@ CACHE_PATH.mkdir(exist_ok=True)
 ALL_STATS = Path(CONFIG_PATH / "available_stats.txt").read_text(encoding="utf-8").splitlines()
 
 
-class Analyzer:
-    def __init__(self):
-        self._api_key = (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
-        self.save_dates = None
-        self._downloaded_country_data = False
-        self._downloaded_province_data = False
-        self.saves: dict = {}
-
-    def read_cached_data(self):
-        cached_saves = Path(CACHE_PATH / "saves.pkl")
-        if cached_saves.exists():
-            with cached_saves.open("rb") as f:
-                self.saves = pickle.load(f)
-            return self.saves
-        return {}
-
-    def get_save_metadata(self):
-        if self.saves:
-            return self.saves
-
-        params = {"key": self._api_key, "scope": "fetchUserSaves"}
-        response = requests.get(SKANDERBEG_LINK, params=params, timeout=10).json()
-
-        if response.status_code != requests.codes.all_good:
-            raise requests.exceptions.HTTPError
-
-        saves = {}
-        for save_data in response.json():
-            year = int(save_data["date"][:4])
-            saves[year] = Save(
-                **save_data,
-                year=year,
-            )
-
-        self.save_dates = saves.keys()
-        self.saves = saves
-        return saves
-
-    def get_country_data(self, *, force_offline: bool = False):
-        if self._downloaded_country_data:
-            return self.saves
-
-        if not self.saves and not force_offline:
-            self.get_save_metadata()
-
-        self.saves.update(self.read_cached_data())
-
-        if force_offline:
-            return self.saves
-
-        saves_to_download = {date: save for date, save in self.saves.items() if not save.data}
-
-        for date, save in saves_to_download.items():
-            params = {
-                "scope": "getSaveDataDump",
-                "save": save.hash,
-                "api_key": self._api_key,
-                "type": "countriesData",
-            }
-            response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
-            if response.status_code != requests.codes.all_good:
-                raise requests.exceptions.HTTPError
-
-            response = response.json()
-            self.saves[date].data = response
-
-        self._downloaded_country_data = True
-
-        with Path(CACHE_PATH / "saves.pkl").open("wb") as f:
-            pickle.dump(self.saves, f)
-
-        return self.saves
-
-
 @dataclass
 class Save:
     id: str
@@ -121,78 +47,132 @@ class Save:
     viewCount: str
     augmentedCampaign: str
     year: int
-    data: dict | None = None
+    country_data: dict | None = None
+    provinces_data: dict | None = None
 
 
-# data request
+class Analyzer:
+    def __init__(self, *, force_offline: bool = False):
+        self._api_key = (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
+        self._save_dates = None
+        self._tags = None
+        self._downloaded_country_data = False
+        self._downloaded_province_data = False
+        self.saves: dict = {}
+        self.force_offline = force_offline
 
+    def read_cached_data(self):
+        cached_saves = Path(CACHE_PATH / "saves.pkl")
+        if cached_saves.exists():
+            with cached_saves.open("rb") as f:
+                self.saves = pickle.load(f)
+            return self.saves
+        return {}
 
-def get_global_provinces_data(
-    saves: dict[int, str],
-    api_key: str,
-    global_provinces_data=None,
-) -> dict[int, dict]:
-    """Get global provinces data"""
-    if global_provinces_data:
-        return global_provinces_data
+    @property
+    def tags(self) -> list[str]:
+        if self._tags:
+            return self._tags
+        tags = (CONFIG_PATH / "countries.txt").read_text(encoding="utf-8").split(",")
+        self._tags = tags
+        return tags
 
-    data = dict()
+    @property
+    def save_dates(self) -> list[int]:
+        if self._save_dates:
+            return self._save_dates
+        if not self.saves:
+            self.get_save_metadata()
+        self._save_dates = sorted(self.saves.keys())
+        return self._save_dates
 
-    for date, save in saves.items():
-        params = dict(
-            scope="getSaveDataDump",
-            save=save,
-            api_key=api_key,
-            type="provincesData",
-        )
-        response = requests.get(SKANDERBEG_LINK, params=params).json()
-        data[date] = response
+    @property
+    def current_year(self) -> int:
+        if not self.save_dates:
+            self.get_save_metadata()
+        return max(self.save_dates)
 
-    return data
+    @property
+    def current_save(self) -> Save:
+        if not self.save_dates:
+            self.get_save_metadata()
+        return self.saves[self.current_year]
 
+    def get_save_metadata(self):
+        if self.saves:
+            return self.saves
 
-def get_global_countries_data(
-    saves: dict[int, str],
-    api_key: str,
-    global_countries_data=None,
-) -> dict[int, dict]:
-    """Get global countries data"""
-    if global_countries_data:
-        return global_countries_data
+        if self.force_offline:
+            self.saves = self.read_cached_data()
+            return self.saves
 
-    data = dict()
+        params = {"key": self._api_key, "scope": "fetchUserSaves"}
+        response = requests.get(SKANDERBEG_LINK, params=params, timeout=10).json()
 
-    for date, save in saves.items():
-        params = dict(
-            scope="getSaveDataDump",
-            save=save,
-            api_key=api_key,
-            type="countriesData",
-        )
-        print(f"waiting for {date}...")
-        response = requests.get(SKANDERBEG_LINK, params=params)
-        if response.status_code != 200:
-            print(response)
-            exit()
-        response = response.json()
+        if response.status_code != requests.codes.all_good:
+            raise requests.exceptions.HTTPError
 
-        data[date] = response
+        saves = {}
+        for save_data in response.json():
+            year = int(save_data["date"][:4])
+            saves[year] = Save(
+                **save_data,
+                year=year,
+            )
 
-    return data
+        self.saves = saves
+        return saves
 
+    def get_country_data(self, *, force_offline: bool = False):
+        if self._downloaded_country_data:
+            return self.saves
 
-# chosen countries
+        return self.get_data(data_type="countriesData", force_offline=force_offline)
 
+    def get_provinces_data(self, *, force_offline: bool = False):
+        if self._downloaded_province_data:
+            return self.saves
 
-def get_tags() -> list[str]:
-    """Gets tags of chosen countries"""
-    with (CONFIG_PATH / "countries.txt").open(
-        encoding="utf-8",
-    ) as file:
-        tags = file.read()
+        return self.get_data(data_type="provincesData", force_offline=force_offline)
 
-    tags = tags.split(",")
-    return tags
+    def get_data(self, *, data_type: str, force_offline: bool = False):
+        if data_type not in {"countriesData", "provincesData"}:
+            raise ValueError
+
+        if not self.saves and not force_offline:
+            self.get_save_metadata()
+
+        self.saves.update(self.read_cached_data())
+
+        if force_offline:
+            return self.saves
+
+        saves_to_download = {date: save for date, save in self.saves.items() if not save.data}
+
+        for date, save in saves_to_download.items():
+            params = {
+                "scope": "getSaveDataDump",
+                "save": save.id,
+                "api_key": self._api_key,
+                "type": data_type,
+            }
+            response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
+            if response.status_code != requests.codes.all_good:
+                raise requests.exceptions.HTTPError
+
+            response = response.json()
+
+            if data_type == "countriesData":
+                self.saves[date].country_data = response["countriesData"]
+                self._downloaded_country_data = True
+            elif data_type == "provincesData":
+                self.saves[date].provinces_data = response["provincesData"]
+                self._downloaded_province_data = True
+
+        with Path(CACHE_PATH / "saves.pkl").open("wb") as f:
+            pickle.dump(self.saves, f)
+
+        return self.saves
 
 
 # countries data
