@@ -1,5 +1,5 @@
-import json
 import pickle
+from copy import deepcopy
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -62,24 +62,25 @@ class Save:
 
 
 class Analyzer:
+    _EU4_START_DATE: int = 1444
+
     def __init__(self, *, api_key: str | None = None, force_offline: bool = False):
-        self._api_key = (
+        self._api_key: str = (
             api_key or (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
         )  # TODO: replace with txt
-        self._save_dates = None
-        self._tags = None
-        self._downloaded_country_data = False
-        self._downloaded_province_data = False
-        self.saves: dict = {}
-        self.force_offline = force_offline
-        self._tag_coulours = None
+        self._save_dates: list[int] | None = None
+        self._tags: list[str] | None = None
+        self._downloaded_country_data: bool = False
+        self._downloaded_province_data: bool = False
+        self.saves: dict[int, Save] = {}
+        self.force_offline: bool = force_offline
+        self._tag_coulours: dict[str, str] | None = None
 
-    def read_cached_data(self):
+    def read_cached_data(self) -> dict[str, Save]:
         cached_saves = Path(CACHE_PATH / "saves.pkl")
         if cached_saves.exists():
             with cached_saves.open("rb") as f:
-                self.saves = pickle.load(f)
-            return self.saves
+                return pickle.load(f)
         return {}
 
     @property
@@ -112,12 +113,12 @@ class Analyzer:
         return self.saves[self.current_year]
 
     @property
-    def tag_colours(self):
+    def tag_colours(self) -> dict[str, str] | None:
         if self._tag_coulours:
             return self._tag_coulours
         return None
 
-    def get_save_metadata(self):
+    def get_save_metadata(self) -> dict[int, Save]:
         if self.saves:
             return self.saves
 
@@ -142,30 +143,30 @@ class Analyzer:
         self.saves = saves
         return saves
 
-    def get_country_data(self, *, force_offline: bool = False):
+    def get_country_data(self) -> dict[int, Save]:
         if self._downloaded_country_data:
             return self.saves
 
-        self.get_data(data_type="countriesData", force_offline=force_offline)
+        self._get_data(data_type="countriesData")
         self._process_country_data()
         return self.saves
 
-    def get_provinces_data(self, *, force_offline: bool = False):
+    def get_provinces_data(self) -> dict[int, Save]:
         if self._downloaded_province_data:
             return self.saves
 
-        return self.get_data(data_type="provincesData", force_offline=force_offline)
+        return self._get_data(data_type="provincesData")
 
-    def get_data(self, *, data_type: str, force_offline: bool = False):
+    def _get_data(self, *, data_type: str) -> dict[int, Save]:
         if data_type not in {"countriesData", "provincesData"}:
             raise ValueError
 
-        if not self.saves and not force_offline:
+        if not self.saves:
             self.get_save_metadata()
 
         self.saves.update(self.read_cached_data())
 
-        if force_offline:
+        if self.force_offline:
             return self.saves
 
         if data_type == "countriesData":
@@ -204,7 +205,13 @@ class Analyzer:
 
         return self.saves
 
-    def _process_country_data(self):
+    def _process_country_data(self) -> None:
+        if not self._downloaded_country_data:
+            raise ValueError
+
+        if (current_save_data := self.current_save.country_data) is None:
+            raise ValueError
+
         # overwrite tags (with current ones) that players used to form other tags
         # this will ensure continuity of tags in the game
         # and easier access to data
@@ -214,9 +221,11 @@ class Analyzer:
         tag_colours = {}
 
         for tag in self.tags:
-            reforms: list[dict] | None = self.current_save.country_data[tag].get(
-                "reformations",
-            )  # TODO: resolve this warning
+            tag_data = current_save_data.get(tag)
+            if tag_data is None:
+                raise ValueError
+
+            reforms = tag_data.get("reformations")
 
             if reforms:
                 for reform in reforms:
@@ -227,39 +236,68 @@ class Analyzer:
                     reformations[tag].append((prev_tag, formation_year))
 
             # save current colour of the tag
-            tag_colours[tag] = self.current_save.country_data[tag][
-                "hex"
-            ]  # TODO: resolve this warning
+            tag_colours[tag] = current_save_data[tag]["hex"]
 
         self._tag_coulours = tag_colours
+
+        # algorithm to get income_stats
+        ref = deepcopy(reformations)
+        for current_tag, formation in ref.items():
+            inc_stats = {}
+            left = self._EU4_START_DATE
+            formation.append((current_tag, self.current_year))
+            for save_date in sorted(self.saves):
+                if (country_data := self.saves[save_date].country_data) is None:
+                    raise ValueError
+
+                for prev_tag, formation_year in formation:
+                    if save_date == self._EU4_START_DATE:
+                        continue
+
+                    if save_date == self.current_year:
+                        data = {
+                            k: v
+                            for k, v in country_data[current_tag]["income_stats"].items()
+                            if int(k) > left
+                        }
+                        inc_stats.update(data)
+
+                    if formation_year > save_date:
+                        break
+                    if formation_year == left:
+                        break
+
+                    data = {
+                        k: v
+                        for k, v in country_data[prev_tag]["income_stats"].items()
+                        if formation_year >= int(k) > left
+                    }
+                    inc_stats.update(data)
+                    left = formation_year
+
+            inc_stats = {int(k): v for k, v in inc_stats.items()}
+
+            current_save_data[current_tag]["income_stats"] = inc_stats
 
         # algorithm to relabel tags
         # for each tag that was formed, check all saves
         for current_tag, formation in reformations.items():
             for save_date in sorted(self.saves):
+                country_data = self.saves[save_date].country_data
+                if country_data is None:
+                    raise ValueError
+
                 for prev_tag, formation_year in formation:
-                    if save_date == 1444:
-                        prev_tag_data = self.saves[save_date].country_data[prev_tag]
-                        self.saves[save_date].country_data[current_tag] = prev_tag_data
-
-                    # income_stats fix
-                    # this has to be done separately
-                    # income_stats is a different structure than other stats
-                    if formation_year <= save_date:
-                        income_stats = (
-                            self.saves[save_date].country_data[current_tag].get("income_stats", {})
-                        )
-                        prev_tag_data = self.saves[save_date].country_data[prev_tag]
-
-                        income_stats.update(prev_tag_data["income_stats"])
-                        prev_tag_data["income_stats"] = income_stats
+                    if save_date == self._EU4_START_DATE:
+                        prev_tag_data = country_data[prev_tag]
+                        country_data[current_tag] = prev_tag_data
 
                     if formation_year >= save_date:
-                        prev_tag_data = self.saves[save_date].country_data[prev_tag]
-                        self.saves[save_date].country_data[current_tag] = prev_tag_data
+                        prev_tag_data = country_data[prev_tag]
+                        country_data[current_tag] = prev_tag_data
 
                     # delete previous tag data, so it doesn't pollute the data
-                    del self.saves[save_date].country_data[prev_tag]
+                    del country_data[prev_tag]
 
     # selecting data
     def get_statistic(
@@ -282,6 +320,8 @@ class Analyzer:
         for date, save_data in self.saves.items():
             dates.append(date)
             country_data = save_data.country_data
+            if country_data is None:
+                raise ValueError
 
             for tag, tag_stats in chosen_tags.items():
                 stat = country_data[tag].get(statistic, pd.NA)
@@ -290,9 +330,13 @@ class Analyzer:
         return pd.DataFrame(data=chosen_tags, index=dates).astype("float64", errors="ignore")
 
     def _get_statistic__income_stats(self, tags: list[str]) -> pd.DataFrame:
+        current_country_data = self.current_save.country_data
+        if current_country_data is None:
+            raise ValueError
+
         series_to_concat = []
         for tag in tags:
-            data = self.current_save.country_data[tag]["income_stats"]  # TODO: resolve this warning
+            data = current_country_data[tag]["income_stats"]
             series = pd.Series(data=data, name=tag)
             series.index = series.index.astype("int64")
             series_to_concat.append(series)
@@ -310,7 +354,7 @@ def create_df_with_cagr_values(data: pd.DataFrame) -> pd.DataFrame:
     max_year = data.columns.max()
 
     for i, (start, end) in enumerate(pairwise(data), start=0):
-        year_diff = end - start  # TODO: resolve this warning
+        year_diff = int(str(end)) - int(str(start))  # Convert to int to avoid type error
         period_cagr = (data[end] / data[start]) ** (1 / year_diff) - 1
         data.insert(2 * i + 1, year_diff, period_cagr, allow_duplicates=True)
 
@@ -426,191 +470,16 @@ def _inp() -> str:
         return value
 
 
-def country_data_segment(data, tags_colours: dict[str, str]) -> None:
-    """Loop with country data analysis segment
-
-    Args:
-        data (dict[int, dict]): prepared country data
-        tags_colours (dict[str, str]): dict with players' tags and corresponding colours
-
-    """
-    while True:
-        statistic = _inp()
-
-        dates, country_stats, income_stats = get_country_statistic(
-            statistic=statistic,
-            data=data,
-            tags=tags_colours.keys(),
-        )
-
-        try:
-            vals_only = _make_table(country_stats, dates)
-            curr_year = vals_only.columns.max()
-
-            if not income_stats:
-                wd = world_data(statistic, data)
-                vals_only = pd.concat([vals_only, wd])
-
-            growth_rates = _calculate_growth_rates(vals_only)
-            vals_and_growths = _combine_vals_and_growth_rates(vals_only, growth_rates)
-            print(vals_and_growths, end="\n\n")
-        except TypeError as e:
-            print(f"this doesn't work: {e}")
-            continue
-
-        inp = input("save df? (y/n/q): ")
-        if inp.lower() == "y":
-            _export_table(
-                vals_and_growths,
-                tags_colours,
-                title=statistic,
-                year=curr_year,
-            )
-            print("df saved", end="\n\n")
-        elif inp.lower() == "q":
-            return
-
-        inp = input("chart? (y/s/n/q): ")
-        if inp.lower() == "y":
-            if income_stats:
-                _line_chart(dates, income_stats, tags_colours, statistic)
-            else:
-                _line_chart(dates, country_stats, tags_colours, statistic)
-        elif inp.lower() == "s":
-            if income_stats:
-                _line_chart(
-                    dates,
-                    income_stats,
-                    tags_colours,
-                    statistic,
-                    only_save=True,
-                )
-            else:
-                _line_chart(
-                    dates,
-                    country_stats,
-                    tags_colours,
-                    statistic,
-                    only_save=True,
-                )
-        elif inp.lower() == "q":
-            return
-
-        # world share segment
-        if income_stats:
-            inp = input("new stat? (y/n/q): ")
-            if inp.lower() == "y":
-                continue
-            return
-
-        inp = input("world share? (y/n/q): ")
-        if inp.lower() == "y":
-            wd = world_data(statistic, data)
-            players_world_share = vals_only.drop("WORLD") / wd.loc["WORLD"]
-            print(players_world_share, end="\n\n")
-
-            inp = input("save df? (y/n/q): ")
-            if inp.lower() == "y":
-                _export_table(
-                    players_world_share,
-                    tags_colours,
-                    title=statistic,
-                    year=curr_year,
-                    world_data=True,
-                )
-                print("df saved", end="\n\n")
-            elif inp.lower() == "q":
-                return
-
-            inp = input("chart? (y/s/n/q): ")
-            prepd_for_chart = _players_vs_world_data_for_chart(players_world_share)
-            if inp.lower() == "y":
-                _line_chart(
-                    dates,
-                    prepd_for_chart,
-                    tags_colours,
-                    statistic,
-                    world_data=True,
-                )
-            elif inp.lower() == "s":
-                _line_chart(
-                    dates,
-                    prepd_for_chart,
-                    tags_colours,
-                    statistic,
-                    only_save=True,
-                    world_data=True,
-                )
-            elif inp.lower() == "q":
-                return
-        elif inp == "q":
-            return
-
-        inp = input("new stat? (y/n/q): ")
-        if inp.lower() == "y":
-            pass
-        else:
-            return
+def country_data_segment():
+    """Loop with country data analysis segment"""
 
 
-def provinces_data_segment(data: pd.DataFrame) -> None:
-    """Loop with province data analysis segment
-
-    Args:
-        data (pd.DataFrame): prepared province data
-
-    """
-    while True:
-        inp = input("export provinces data (y/n/q): ")
-        if inp == "y":
-            _export_provinces_data(data)
-        elif inp == "q":
-            return
+def provinces_data_segment():
+    """Loop with province data analysis segment"""
 
 
 # TODO: rewrite the main function
-def main():
-    """Main function
-
-    main function with the interface, can choose which api key to use and what to analyse
-    """
-    tags = get_tags()
-    api_num = bool(int(input("\nchoose api (1 -> alan, 0 -> michal): ")))
-    saves, api_key = get_saves(my_api=api_num)
-
-    global_provinces_data = None
-    global_countries_data = None
-    tags_colours = None
-
-    while True:
-        inp = input("\nprovinces_data/tradenodes or country_data (0, 1, q): ")
-        print()
-        if inp == "0":
-            if not global_provinces_data:
-                print("requesting data...")
-                data = get_global_provinces_data(saves, api_key)
-
-                print("processing data...")
-                global_provinces_data = prepare_provinces_data(data)
-
-            provinces_data_segment(global_provinces_data)
-
-        elif inp == "1":
-            if not global_countries_data or not tags_colours:
-                print("requesting data...")
-                data = get_global_countries_data(saves, api_key)
-
-                print("processing data...")
-                global_countries_data, tags_colours = prepare_countries_data(data, tags)
-
-                with open(OUTPUT_PATH / "tags_colours.json", "w") as f:
-                    json.dump(tags_colours, f)
-                print("tags_colours.json saved")
-
-            country_data_segment(global_countries_data, tags_colours)
-
-        elif inp == "q":
-            return
+def main(): ...
 
 
 if __name__ == "__main__":
