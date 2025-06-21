@@ -1,6 +1,6 @@
 import pickle
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
@@ -8,8 +8,9 @@ import numpy as np
 import pandas as pd
 import requests
 from matplotlib import pyplot as plt
-
-plt.style.use("dark_background")
+from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
+from pandas.io.formats.style import Styler
 
 SKANDERBEG_LINK = "https://skanderbeg.pm/api.php"
 
@@ -59,6 +60,167 @@ class Save:
             f"country_data={self.country_data is not None}, "
             f"provinces_data={self.provinces_data is not None})"
         )
+
+
+@dataclass(frozen=True)
+class SkandStat:
+    statistic: str
+    data: pd.DataFrame
+    tag_colours: dict[str, str] | None = None
+    save_dates: list[int] | None = None
+    include_world: bool = True
+
+    DEFAULT_FIGSIZE: tuple[int, int] = field(default=(13, 7), init=False, repr=False)
+    DEFAULT_DPI: int = field(default=200, init=False, repr=False)
+    DEFAULT_STYLE: str = field(default="dark_background", init=False, repr=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}"
+            f"({self.statistic=}, "
+            f"{self.save_dates=}, "
+            f"{self.include_world=})"
+        )
+
+    @property
+    def current_year(self) -> int:
+        if self.save_dates is None:
+            return self.data.index.max()
+        return max(self.save_dates)
+
+    def line_chart(
+        self,
+        y_scale: str = "log",
+        figsize: tuple[int, int] | None = None,
+        style: str | None = None,
+    ) -> Figure:
+        figsize = figsize or self.DEFAULT_FIGSIZE
+        colours = {} if not self.tag_colours else self.tag_colours
+        dates = self.data.index if not self.save_dates else self.save_dates
+        style = style or self.DEFAULT_STYLE
+
+        with plt.style.context(style):
+            fig, ax = plt.subplots(figsize=figsize)
+
+            for tag in self.data.columns:
+                if tag == "WORLD":
+                    continue
+
+                ax.plot(self.data[tag], color=colours.get(tag))
+
+                annotation = f"{tag} | {self.data[tag].iloc[-1]:_.2f}"
+                ax.annotate(
+                    f"{annotation}",
+                    (self.data.index.max() + 2, self.data[tag].iloc[-1]),
+                    fontsize=10,
+                    color=colours.get(tag),
+                    bbox={"facecolor": "black", "edgecolor": "white", "boxstyle": "round"},
+                )
+
+            ax.set_yscale(y_scale)
+            formatter = FuncFormatter(lambda y, pos: f"{y:_.2f}")
+            ax.yaxis.set_major_formatter(formatter)
+            ax.yaxis.set_minor_formatter(formatter)
+            ax.legend(self.data.keys(), loc="upper left")
+            ax.set_title(f"{self.statistic} by {self.current_year}")
+            ax.set_xticks(dates)
+            ax.grid(visible=True, axis="y", alpha=0.25)
+            fig.tight_layout()
+
+            return fig
+
+    def data_with_cagr_values(self) -> pd.DataFrame:
+        data = self.data.T.sort_index(axis="columns")
+
+        min_year = data.columns.min()
+        max_year = data.columns.max()
+
+        for i, (start, end) in enumerate(pairwise(data), start=0):
+            year_diff = int(str(end)) - int(str(start))  # Convert to int to avoid type error
+            period_cagr = (data[end] / data[start]) ** (1 / year_diff) - 1
+            data.insert(2 * i + 1, year_diff, period_cagr, allow_duplicates=True)
+
+        total_year_diff = max_year - min_year
+        total_cagr = (data[max_year] / data[min_year]) ** (1 / total_year_diff) - 1
+        data.insert(len(data.columns), total_year_diff, total_cagr)
+        return data
+
+    def pretty_table(self, *, with_cagr: bool = True) -> Styler:
+        data = self.data_with_cagr_values() if with_cagr else self.data.T
+        data = data.copy(deep=True)
+        old_cols = data.columns.copy(deep=True)
+
+        counter = {}
+        new_cols = []
+        for col in data.columns:
+            if col in counter:
+                spaces = counter[col]
+                counter[col] += 1
+            else:
+                spaces = 0
+                counter[col] = 1
+            new_cols.append(str(col) + "\u200b" * spaces)
+
+        data.columns = new_cols
+
+        styler = data.style
+
+        # ignoring this warning, the same is in the docs
+        # https://pandas.pydata.org/pandas-docs/version/2.2/reference/api/pandas.io.formats.style.Styler.format.html
+        barrier = 1000
+        nr_formats = {
+            new: "{:,.1f}" if old > barrier else "{:.1%}"  # type: ignore
+            for old, new in zip(old_cols, new_cols, strict=False)
+        }
+        styler.format(nr_formats, na_rep="-", precision=1, decimal=",", thousands=" ")  # type: ignore
+
+        # ignoring this warning, the same is in the docs
+        # https://pandas.pydata.org/pandas-docs/version/2.2/reference/api/pandas.io.formats.style.Styler.set_properties.html
+        styler.set_properties(**{
+            "background-color": "black",
+            "color": "white",
+        })  # type: ignore
+
+        # customize index
+        colours = {} if not self.tag_colours else self.tag_colours
+        colours_for_index = {k: f"color: {v}" for k, v in colours.items()}
+        styler = styler.map_index(
+            lambda x: colours_for_index.get(x, "color: white"),  # type: ignore
+            axis=0,
+        )
+        # customize header
+        styler = styler.set_table_styles(
+            [
+                {
+                    "selector": "th",
+                    "props": [
+                        ("background-color", "black"),
+                        ("font-size", "125%"),
+                        ("font-weight", "bold"),
+                    ],
+                },
+                {
+                    "selector": "caption",
+                    "props": [
+                        ("background-color", "black"),
+                        ("color", "white"),
+                        ("font-size", "175%"),
+                    ],
+                },
+            ],
+        )
+
+        # set caption
+        caption = f" as % of world's {self.statistic}" if self.include_world else ""
+        styler = styler.set_caption(self.statistic + caption)
+        styler = styler.set_caption(self.statistic.upper())
+
+        # add highlitights
+        subset = pd.IndexSlice[[indx for indx in data.index if indx != "WORLD"], :]
+        styler = styler.highlight_max(color="darkgreen", subset=subset, axis="index")  # type: ignore
+        styler = styler.highlight_min(color="darkred", subset=subset, axis="index")  # type: ignore
+
+        return styler
 
 
 class Analyzer:
@@ -206,9 +368,6 @@ class Analyzer:
         return self.saves
 
     def _process_country_data(self) -> None:
-        if not self._downloaded_country_data:
-            raise ValueError
-
         if (current_save_data := self.current_save.country_data) is None:
             raise ValueError
 
@@ -291,10 +450,12 @@ class Analyzer:
                     if save_date == self._EU4_START_DATE:
                         prev_tag_data = country_data[prev_tag]
                         country_data[current_tag] = prev_tag_data
+                        break
 
                     if formation_year >= save_date:
                         prev_tag_data = country_data[prev_tag]
                         country_data[current_tag] = prev_tag_data
+                        break
 
                     # delete previous tag data, so it doesn't pollute the data
                     del country_data[prev_tag]
@@ -306,10 +467,10 @@ class Analyzer:
         *,
         tags: list[str] | None = None,
         include_world: bool = True,
-    ):
+    ) -> SkandStat:
         if tags is None:
             tags = self.tags
-        # TODO: include world, sum of all tags for specific date
+
         dates = []
         chosen_tags = {tag: [] for tag in tags}
 
@@ -317,19 +478,41 @@ class Analyzer:
         if statistic == "income_stats":
             return self._get_statistic__income_stats(tags=tags)
 
+        world = []
         for date, save_data in self.saves.items():
             dates.append(date)
             country_data = save_data.country_data
             if country_data is None:
                 raise ValueError
 
-            for tag, tag_stats in chosen_tags.items():
-                stat = country_data[tag].get(statistic, pd.NA)
-                tag_stats.append(stat)
+            world_stat = 0
+            for tag, stats in country_data.items():
+                stat = stats.get(statistic, 0)
+                world_stat += float(stat)
 
-        return pd.DataFrame(data=chosen_tags, index=dates).astype("float64", errors="ignore")
+                if tag in chosen_tags:
+                    chosen_tags[tag].append(stat)
 
-    def _get_statistic__income_stats(self, tags: list[str]) -> pd.DataFrame:
+            world.append(world_stat)
+
+        if include_world:
+            chosen_tags["WORLD"] = world
+
+        data = (
+            pd.DataFrame(data=chosen_tags, index=dates)
+            .astype("float64", errors="ignore")
+            .sort_index(axis="index", ascending=True)
+        )
+
+        return SkandStat(
+            statistic=statistic,
+            data=data,
+            tag_colours=self.tag_colours,
+            save_dates=self.save_dates,
+            include_world=include_world,
+        )
+
+    def _get_statistic__income_stats(self, tags: list[str]) -> SkandStat:
         current_country_data = self.current_save.country_data
         if current_country_data is None:
             raise ValueError
@@ -341,27 +524,17 @@ class Analyzer:
             series.index = series.index.astype("int64")
             series_to_concat.append(series)
 
-        return pd.concat(series_to_concat, axis="columns", sort=True).astype(
+        data = pd.concat(series_to_concat, axis="columns", sort=True).astype(
             "float64",
             errors="ignore",
         )
-
-
-def create_df_with_cagr_values(data: pd.DataFrame) -> pd.DataFrame:
-    data = data.sort_index(axis="columns")
-
-    min_year = data.columns.min()
-    max_year = data.columns.max()
-
-    for i, (start, end) in enumerate(pairwise(data), start=0):
-        year_diff = int(str(end)) - int(str(start))  # Convert to int to avoid type error
-        period_cagr = (data[end] / data[start]) ** (1 / year_diff) - 1
-        data.insert(2 * i + 1, year_diff, period_cagr, allow_duplicates=True)
-
-    total_year_diff = max_year - min_year
-    total_cagr = (data[max_year] / data[min_year]) ** (1 / total_year_diff) - 1
-    data.insert(len(data.columns), total_year_diff, total_cagr)
-    return data
+        return SkandStat(
+            statistic="income_stats",
+            data=data,
+            tag_colours=self.tag_colours,
+            save_dates=self.save_dates,
+            include_world=False,
+        )
 
 
 # TODO: provinces data
