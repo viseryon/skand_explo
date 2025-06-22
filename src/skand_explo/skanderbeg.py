@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
+import dataframe_image as dfi
 import numpy as np
 import pandas as pd
 import requests
@@ -11,6 +12,7 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from pandas.io.formats.style import Styler
+from requests.exceptions import RequestException
 
 SKANDERBEG_LINK = "https://skanderbeg.pm/api.php"
 
@@ -73,6 +75,7 @@ class SkandStat:
     DEFAULT_FIGSIZE: tuple[int, int] = field(default=(13, 7), init=False, repr=False)
     DEFAULT_DPI: int = field(default=200, init=False, repr=False)
     DEFAULT_STYLE: str = field(default="dark_background", init=False, repr=False)
+    DEFAULT_EXPORT_EXTENSION: str = field(default=".png", init=False, repr=False)
 
     def __repr__(self) -> str:
         return (
@@ -222,14 +225,36 @@ class SkandStat:
 
         return styler
 
+    def export_viz(
+        self,
+        viz: Figure | Styler,
+        dpi: int | None = None,
+        extension: str | None = None,
+    ) -> None:
+        extension = extension if extension is not None else self.DEFAULT_EXPORT_EXTENSION
+        dpi = dpi if dpi is not None else self.DEFAULT_DPI
+
+        file_name = f"{self.statistic}_by_{self.current_year}".upper()
+        export_path = CHARTS_PATH / Path(file_name).with_suffix(extension)
+
+        if isinstance(viz, Figure):
+            viz.savefig(export_path, dpi=dpi)
+        elif isinstance(viz, Styler):
+            dfi.export(
+                viz,  # type: ignore
+                export_path,
+                dpi=dpi,
+            )
+        else:
+            msg = "viz is not an instance of `Styler` or `Figure`"
+            raise TypeError(msg)
+
 
 class Analyzer:
     _EU4_START_DATE: int = 1444
 
-    def __init__(self, *, api_key: str | None = None, force_offline: bool = False):
-        self._api_key: str = (
-            api_key or (CONFIG_PATH / "apis.json").open(encoding="utf-8").read()
-        )  # TODO: replace with txt
+    def __init__(self, api_key: str | None = None, *, force_offline: bool = False):
+        self._api_key: str | None = api_key
         self._save_dates: list[int] | None = None
         self._tags: list[str] | None = None
         self._downloaded_country_data: bool = False
@@ -238,7 +263,7 @@ class Analyzer:
         self.force_offline: bool = force_offline
         self._tag_coulours: dict[str, str] | None = None
 
-    def read_cached_data(self) -> dict[str, Save]:
+    def read_cached_data(self) -> dict[int, Save]:
         cached_saves = Path(CACHE_PATH / "saves.pkl")
         if cached_saves.exists():
             with cached_saves.open("rb") as f:
@@ -342,25 +367,31 @@ class Analyzer:
         else:
             raise ValueError
 
-        for date, save in saves_to_download.items():
-            params = {
-                "scope": "getSaveDataDump",
-                "save": save.hash,
-                "key": self._api_key,
-                "type": data_type,
-            }
-            response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
-            if response.status_code != requests.codes.all_good or response.text == "Err":
-                raise requests.exceptions.HTTPError
+        with requests.Session() as session:
+            for date, save in saves_to_download.items():
+                params = {
+                    "scope": "getSaveDataDump",
+                    "save": save.hash,
+                    "key": self._api_key,
+                    "type": data_type,
+                }
+                request = requests.Request(
+                    method="GET",
+                    url=SKANDERBEG_LINK,
+                    params=params,
+                ).prepare()
+                response = session.send(request, timeout=10)
+                if response.status_code != requests.codes.all_good or response.text == "Err":
+                    raise RequestException(request=request, response=response)
 
-            response = response.json()
+                response = response.json()
 
-            if data_type == "countriesData":
-                self.saves[date].country_data = response
-                self._downloaded_country_data = True
-            elif data_type == "provincesData":
-                self.saves[date].provinces_data = response
-                self._downloaded_province_data = True
+                if data_type == "countriesData":
+                    self.saves[date].country_data = response
+                    self._downloaded_country_data = True
+                elif data_type == "provincesData":
+                    self.saves[date].provinces_data = response
+                    self._downloaded_province_data = True
 
         with Path(CACHE_PATH / "saves.pkl").open("wb") as f:
             pickle.dump(self.saves, f)
