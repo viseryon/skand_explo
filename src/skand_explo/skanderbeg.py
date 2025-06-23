@@ -1,6 +1,7 @@
 import pickle
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from itertools import pairwise
 from pathlib import Path
 
@@ -36,21 +37,21 @@ ALL_STATS = Path(CONFIG_PATH / "available_stats.txt").read_text(encoding="utf-8"
 class Save:
     id: str
     hash: str
-    timestamp: str
+    timestamp: datetime
     name: str
-    uploadedBy: str
+    uploaded_by: str
     version: str
     player: str
-    multiplayer: str
-    date: str
-    customname: str
+    multiplayer: bool
+    date: date
+    custom_name: str
     game: str
     mods: str
-    linkedSheet: str
+    linked_sheet: str
     options: str
-    lastVisited: str
-    viewCount: str
-    augmentedCampaign: str
+    last_visited: datetime
+    view_count: int
+    augmented_campaign: str
     year: int
     country_data: dict | None = None
     provinces_data: dict | None = None
@@ -132,14 +133,14 @@ class SkandStat:
 
             return fig
 
-    def data_with_cagr_values(self) -> pd.DataFrame:
-        data = self.data.T.sort_index(axis="columns")
+    def data_with_cagr(self) -> pd.DataFrame:
+        data = self.data.T
 
         min_year = data.columns.min()
         max_year = data.columns.max()
 
         for i, (start, end) in enumerate(pairwise(data), start=0):
-            year_diff = int(str(end)) - int(str(start))  # Convert to int to avoid type error
+            year_diff = end - start  # type: ignore
             period_cagr = (data[end] / data[start]) ** (1 / year_diff) - 1
             data.insert(2 * i + 1, year_diff, period_cagr, allow_duplicates=True)
 
@@ -148,11 +149,20 @@ class SkandStat:
         data.insert(len(data.columns), total_year_diff, total_cagr)
         return data
 
-    def pretty_table(self, *, with_cagr: bool = True) -> Styler:
-        data = self.data_with_cagr_values() if with_cagr else self.data.T
-        data = data.copy(deep=True)
+    def table(self, *, with_cagr: bool = True) -> Styler:
+        data = self.data_with_cagr() if with_cagr else self.data.T
+
+        # sort by CAGR from whole campaign
+        # or there's no CAGR, by last value
+        last_column = data.columns[-1]
+        data = data.copy(deep=True).sort_values(by=last_column, ascending=False)
+
         old_cols = data.columns.copy(deep=True)
 
+        # it is required for applying highlights that every index is unique
+        # every row index always will be unique, but it's not enforced for columns
+        # to make every column unique a invisible character will be added
+        # to the end of the column name
         counter = {}
         new_cols = []
         for col in data.columns:
@@ -191,9 +201,18 @@ class SkandStat:
             lambda x: colours_for_index.get(x, "color: white"),  # type: ignore
             axis=0,
         )
+
         # customize header
         styler = styler.set_table_styles(
             [
+                {
+                    "selector": "",  # An empty string '' targets the <table> element
+                    "props": [
+                        ("border", "none"),
+                        ("border-collapse", "collapse"),
+                        ("color", "white"),
+                    ],
+                },
                 {
                     "selector": "th",
                     "props": [
@@ -214,9 +233,10 @@ class SkandStat:
         )
 
         # set caption
-        caption = f" as % of world's {self.statistic}" if self.include_world else ""
-        styler = styler.set_caption(self.statistic + caption)
-        styler = styler.set_caption(self.statistic.upper())
+        caption = (
+            self.statistic  # + f"<br>as % of world's {self.statistic}" if self.include_world else ""
+        )
+        styler = styler.set_caption(caption.upper())
 
         # add highlitights
         subset = pd.IndexSlice[[indx for indx in data.index if indx != "WORLD"], :]
@@ -230,7 +250,7 @@ class SkandStat:
         viz: Figure | Styler,
         dpi: int | None = None,
         extension: str | None = None,
-    ) -> None:
+    ) -> Path:
         extension = extension if extension is not None else self.DEFAULT_EXPORT_EXTENSION
         dpi = dpi if dpi is not None else self.DEFAULT_DPI
 
@@ -239,15 +259,16 @@ class SkandStat:
 
         if isinstance(viz, Figure):
             viz.savefig(export_path, dpi=dpi)
-        elif isinstance(viz, Styler):
+            return export_path
+        if isinstance(viz, Styler):
             dfi.export(
                 viz,  # type: ignore
                 export_path,
                 dpi=dpi,
             )
-        else:
-            msg = "viz is not an instance of `Styler` or `Figure`"
-            raise TypeError(msg)
+            return export_path
+        msg = "`viz` is not an instance of `Styler` or `Figure`"
+        raise TypeError(msg)
 
 
 class Analyzer:
@@ -316,17 +337,54 @@ class Analyzer:
         params = {"key": self._api_key, "scope": "fetchUserSaves"}
         response = requests.get(SKANDERBEG_LINK, params=params, timeout=10)
 
-        if response.status_code != requests.codes.all_good or response.text == "Err":
-            raise requests.exceptions.HTTPError
+        if not response.ok or response.text == "Err":
+            raise RequestException(response=response)
 
         saves = {}
         for save_data in response.json():
-            year = int(save_data["date"][:4])
+            # don't care about timezone awareness
+
+            timestamp = save_data["timestamp"]
+            # timestamp format '2025-06-17 01:00:09'
+            timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+
+            date = save_data["date"]
+            # date format '1615.2.15'
+            date = datetime.strptime(date, "%Y.%m.%d").date()  # noqa: DTZ007
+            year = date.year
+
+            multiplayer = save_data["multiplayer"] == "yes"
+
+            last_visited = save_data["lastVisited"]
+            # date format '2025-06-17 01:00:09'
+            last_visited = datetime.strptime(last_visited, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+
+            view_count = save_data["viewCount"]
+            view_count = int(view_count)
+
             saves[year] = Save(
-                **save_data,
+                id=save_data["id"],
+                hash=save_data["hash"],
+                timestamp=timestamp,
+                name=save_data["name"],
+                uploaded_by=save_data["uploadedBy"],
+                version=save_data["version"],
+                player=save_data["player"],
+                multiplayer=multiplayer,
+                date=date,
+                custom_name=save_data["customname"],
+                game=save_data["game"],
+                mods=save_data["mods"],
+                linked_sheet=save_data["linkedSheet"],
+                options=save_data["options"],
+                last_visited=last_visited,
+                view_count=view_count,
+                augmented_campaign=save_data["augmentedCampaign"],
                 year=year,
             )
 
+        # sort saves ones for all the future uses
+        saves = dict(sorted(saves.items()))
         self.saves = saves
         return saves
 
@@ -353,8 +411,12 @@ class Analyzer:
 
         self.saves.update(self.read_cached_data())
 
-        if self.force_offline:
+        # return cached data (if there's any) when force_offline
+        # when no cache and force_offline -> error
+        if self.force_offline and self.saves:
             return self.saves
+        if self.force_offline and not self.saves:
+            raise ValueError
 
         if data_type == "countriesData":
             saves_to_download = {
@@ -381,7 +443,7 @@ class Analyzer:
                     params=params,
                 ).prepare()
                 response = session.send(request, timeout=10)
-                if response.status_code != requests.codes.all_good or response.text == "Err":
+                if not response.ok or response.text == "Err":
                     raise RequestException(request=request, response=response)
 
                 response = response.json()
@@ -436,7 +498,7 @@ class Analyzer:
             inc_stats = {}
             left = self._EU4_START_DATE
             formation.append((current_tag, self.current_year))
-            for save_date in sorted(self.saves):
+            for save_date in self.saves:
                 if (country_data := self.saves[save_date].country_data) is None:
                     raise ValueError
 
@@ -472,7 +534,7 @@ class Analyzer:
         # algorithm to relabel tags
         # for each tag that was formed, check all saves
         for current_tag, formation in reformations.items():
-            for save_date in sorted(self.saves):
+            for save_date in self.saves:
                 country_data = self.saves[save_date].country_data
                 if country_data is None:
                     raise ValueError
@@ -567,6 +629,10 @@ class Analyzer:
             include_world=False,
         )
 
+    # MAIN LOOP
+    # TODO: main loop
+    def run(self): ...  # TODO: write `run()` function that will handle user interaction
+
 
 # TODO: provinces data
 
@@ -650,40 +716,9 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
     return master
 
 
-def _export_provinces_data(data: pd.DataFrame) -> None:
-    data.to_csv(OUTPUT_PATH / "provinces_data.csv", index=False)
-    print("exported")
-
-
-# TODO: main loop
-
-
-def _inp() -> str:
-    value = input("""\nchoose metric or say "help": """)
-    print()
-
-    if value.lower() == "help":
-        print(ALL_STATS)
-        return _inp()
-    if value.lower() == "q":
-        exit()
-    elif value not in ALL_STATS:
-        print("not in available statistics")
-        return _inp()
-    else:
-        return value
-
-
-def country_data_segment():
-    """Loop with country data analysis segment"""
-
-
-def provinces_data_segment():
-    """Loop with province data analysis segment"""
-
-
-# TODO: rewrite the main function
-def main(): ...
+def main() -> None:
+    analyzer = Analyzer(force_offline=True)
+    analyzer.run()
 
 
 if __name__ == "__main__":
