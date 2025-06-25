@@ -1,3 +1,5 @@
+import argparse
+import os
 import pickle
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -16,6 +18,7 @@ from pandas.io.formats.style import Styler
 from requests.exceptions import RequestException
 
 SKANDERBEG_LINK = "https://skanderbeg.pm/api.php"
+SKANDERBEG_API_KEY_ENV_VAR_NAME = "SKANDERBEG_API_KEY"
 
 ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 CHARTS_PATH = ROOT_PATH / "charts"
@@ -716,8 +719,20 @@ def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
     return master
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="SkandParser")
+    parser.add_argument("--api-key", type=str, help="api key to skanderbeg.pm")
+    parser.add_argument("--force-offline", action="store_true", help="run in offline mode")
+    return parser.parse_args()
+
+
 def main() -> None:
-    analyzer = Analyzer(force_offline=True)
+    args = parse_args()
+
+    api_key = os.environ.get(SKANDERBEG_API_KEY_ENV_VAR_NAME) or args.api_key
+    force_offline = args.force_offline
+
+    analyzer = Analyzer(api_key=api_key, force_offline=force_offline)
     analyzer.run()
 
 
