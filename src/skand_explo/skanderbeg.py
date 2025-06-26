@@ -1,9 +1,11 @@
 import argparse
+import base64
 import os
 import pickle
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from io import BytesIO
 from itertools import pairwise
 from pathlib import Path
 
@@ -72,7 +74,7 @@ class Save:
 class SkandStat:
     statistic: str
     data: pd.DataFrame
-    tag_colours: dict[str, str] | None = None
+    tags: dict[str, dict] | None = None
     save_dates: list[int] | None = None
     include_world: bool = True
 
@@ -102,7 +104,7 @@ class SkandStat:
         style: str | None = None,
     ) -> Figure:
         figsize = figsize or self.DEFAULT_FIGSIZE
-        colours = {} if not self.tag_colours else self.tag_colours
+        colours = {} if not self.tags else self.tags
         dates = self.data.index if not self.save_dates else self.save_dates
         style = style or self.DEFAULT_STYLE
 
@@ -113,14 +115,15 @@ class SkandStat:
                 if tag == "WORLD":
                     continue
 
-                ax.plot(self.data[tag], color=colours.get(tag))
+                colour = colours.get(tag, {}).get("colour")
+                ax.plot(self.data[tag], color=colour)
 
                 annotation = f"{tag} | {self.data[tag].iloc[-1]:_.2f}"
                 ax.annotate(
                     f"{annotation}",
                     (self.data.index.max() + 2, self.data[tag].iloc[-1]),
                     fontsize=10,
-                    color=colours.get(tag),
+                    color=colour,
                     bbox={"facecolor": "black", "edgecolor": "white", "boxstyle": "round"},
                 )
 
@@ -128,10 +131,25 @@ class SkandStat:
             formatter = FuncFormatter(lambda y, pos: f"{y:_.2f}")
             ax.yaxis.set_major_formatter(formatter)
             ax.yaxis.set_minor_formatter(formatter)
-            ax.legend(self.data.keys(), loc="upper left")
-            ax.set_title(f"{self.statistic} by {self.current_year}")
+            ax.legend(
+                self.data.keys(),
+                loc="upper left",
+                frameon=False,
+                shadow=True,
+            )
+            ax.set_title(
+                f"{self.statistic.upper().replace('_', ' ')} BY {self.current_year}",
+                fontsize="xx-large",
+                fontstretch="semi-expanded",
+                fontweight="roman",
+            )
             ax.set_xticks(dates)
-            ax.grid(visible=True, axis="y", alpha=0.25)
+            ax.grid(visible=True, which="major", axis="y", alpha=0.25)
+            ax.grid(visible=True, which="minor", axis="y", alpha=0.05)
+            ax.set_frame_on(False)
+            ax.tick_params("y", colors="grey", which="minor")
+            ax.xaxis.set_tick_params(color="none")
+            ax.yaxis.set_tick_params(color="none", which="both")
             fig.tight_layout()
 
             return fig
@@ -179,8 +197,6 @@ class SkandStat:
 
         data.columns = new_cols
 
-        styler = data.style
-
         # ignoring this warning, the same is in the docs
         # https://pandas.pydata.org/pandas-docs/version/2.2/reference/api/pandas.io.formats.style.Styler.format.html
         barrier = 1000
@@ -188,6 +204,16 @@ class SkandStat:
             new: "{:,.1f}" if old > barrier else "{:.1%}"  # type: ignore
             for old, new in zip(old_cols, new_cols, strict=False)
         }
+
+        htmls = []
+        flags = {} if not self.tags else self.tags
+        for tag in data.index:
+            flag = flags.get(tag, {}).get("flag", None)
+            html = "" if flag is None else f'<img src="data:image/png;base64,{flag}" width="24">'
+            htmls.append(html)
+        data.insert(0, " ", htmls)
+
+        styler = data.style
         styler.format(nr_formats, na_rep="-", precision=1, decimal=",", thousands=" ")  # type: ignore
 
         # ignoring this warning, the same is in the docs
@@ -198,8 +224,8 @@ class SkandStat:
         })  # type: ignore
 
         # customize index
-        colours = {} if not self.tag_colours else self.tag_colours
-        colours_for_index = {k: f"color: {v}" for k, v in colours.items()}
+        colours = {} if not self.tags else self.tags
+        colours_for_index = {k: f"color: {v.get('colour')}" for k, v in colours.items()}
         styler = styler.map_index(
             lambda x: colours_for_index.get(x, "color: white"),  # type: ignore
             axis=0,
@@ -242,7 +268,10 @@ class SkandStat:
         styler = styler.set_caption(caption.upper())
 
         # add highlitights
-        subset = pd.IndexSlice[[indx for indx in data.index if indx != "WORLD"], :]
+        subset = pd.IndexSlice[
+            [indx for indx in data.index if indx != "WORLD"],
+            new_cols,
+        ]
         styler = styler.highlight_max(color="darkgreen", subset=subset, axis="index")  # type: ignore
         styler = styler.highlight_min(color="darkred", subset=subset, axis="index")  # type: ignore
 
@@ -280,12 +309,12 @@ class Analyzer:
     def __init__(self, api_key: str | None = None, *, force_offline: bool = False):
         self._api_key: str | None = api_key
         self._save_dates: list[int] | None = None
-        self._tags: list[str] | None = None
+        self._tags: dict[str, dict] | None = None
         self._downloaded_country_data: bool = False
         self._downloaded_province_data: bool = False
         self.saves: dict[int, Save] = {}
         self.force_offline: bool = force_offline
-        self._tag_coulours: dict[str, str] | None = None
+        self._downloaded_flags: bool = False
 
     def read_cached_data(self) -> dict[int, Save]:
         cached_saves = Path(CACHE_PATH / "saves.pkl")
@@ -294,13 +323,27 @@ class Analyzer:
                 return pickle.load(f)
         return {}
 
+    def read_cached_tags(self) -> dict[str, dict]:
+        cached_tags = Path(CACHE_PATH / "tags.pkl")
+        if cached_tags.exists():
+            with cached_tags.open("rb") as f:
+                return pickle.load(f)
+        return {}
+
     @property
-    def tags(self) -> list[str]:
+    def tags(self) -> dict[str, dict]:
         if self._tags:
             return self._tags
+
+        cached_tags = self.read_cached_tags()
+        if cached_tags:
+            self._tags = cached_tags
+            return self._tags
+
         tags = (CONFIG_PATH / "countries.txt").read_text(encoding="utf-8").split(",")
-        self._tags = tags
-        return tags
+        tags = {tag: {} for tag in tags}
+        self._tags = {tag: {} for tag in tags}
+        return self._tags
 
     @property
     def save_dates(self) -> list[int]:
@@ -322,12 +365,6 @@ class Analyzer:
         if not self.save_dates:
             self.get_save_metadata()
         return self.saves[self.current_year]
-
-    @property
-    def tag_colours(self) -> dict[str, str] | None:
-        if self._tag_coulours:
-            return self._tag_coulours
-        return None
 
     def get_save_metadata(self) -> dict[int, Save]:
         if self.saves:
@@ -391,12 +428,56 @@ class Analyzer:
         self.saves = saves
         return saves
 
+    def get_country_flags(self) -> dict[str, dict]:
+        if self.force_offline or self._downloaded_flags:
+            return self.tags
+
+        if self._tags is None:
+            self._tags = {}
+
+        with requests.Session() as session:
+            for tag in self.tags:
+                params = {
+                    "scope": "getCountryFlag",
+                    "save": self.current_save.hash,
+                    "key": self._api_key,
+                    "format": "base64",
+                    "country": tag,
+                }
+                request = requests.Request(
+                    method="GET",
+                    url=SKANDERBEG_LINK,
+                    params=params,
+                ).prepare()
+                response = session.send(request, timeout=10)
+                if not response.ok or response.text == "Err":
+                    raise RequestException(request=request, response=response)
+
+                response = response.text
+                self._tags[tag]["flag"] = response
+
+                flag = base64.b64decode(response)
+                flag = BytesIO(flag)
+
+                picture = plt.imread(flag, format="png")
+                plt.imsave(OUTPUT_PATH / f"{tag}.png", picture)
+
+            self._downloaded_flags = True
+
+        with Path(CACHE_PATH / "tags.pkl").open("wb") as f:
+            pickle.dump(self._tags, f)
+
+        return self._tags
+
     def get_country_data(self) -> dict[int, Save]:
         if self._downloaded_country_data:
             return self.saves
 
         self._get_data(data_type="countriesData")
         self._process_country_data()
+
+        self.get_country_flags()
+
         return self.saves
 
     def get_provinces_data(self) -> dict[int, Save]:
@@ -473,8 +554,6 @@ class Analyzer:
 
         # first check the current save what countries players formed
         reformations = {}
-        tag_colours = {}
-
         for tag in self.tags:
             tag_data = current_save_data.get(tag)
             if tag_data is None:
@@ -491,9 +570,7 @@ class Analyzer:
                     reformations[tag].append((prev_tag, formation_year))
 
             # save current colour of the tag
-            tag_colours[tag] = current_save_data[tag]["hex"]
-
-        self._tag_coulours = tag_colours
+            self.tags[tag]["colour"] = current_save_data[tag]["hex"]
 
         # algorithm to get income_stats
         ref = deepcopy(reformations)
@@ -561,7 +638,7 @@ class Analyzer:
         self,
         statistic: str,
         *,
-        tags: list[str] | None = None,
+        tags: dict[str, dict] | None = None,
         include_world: bool = True,
     ) -> SkandStat:
         if tags is None:
@@ -603,12 +680,12 @@ class Analyzer:
         return SkandStat(
             statistic=statistic,
             data=data,
-            tag_colours=self.tag_colours,
+            tags=self.tags,
             save_dates=self.save_dates,
             include_world=include_world,
         )
 
-    def _get_statistic__income_stats(self, tags: list[str]) -> SkandStat:
+    def _get_statistic__income_stats(self, tags: dict[str, dict]) -> SkandStat:
         current_country_data = self.current_save.country_data
         if current_country_data is None:
             raise ValueError
@@ -627,7 +704,7 @@ class Analyzer:
         return SkandStat(
             statistic="income_stats",
             data=data,
-            tag_colours=self.tag_colours,
+            tags=self.tags,
             save_dates=self.save_dates,
             include_world=False,
         )
