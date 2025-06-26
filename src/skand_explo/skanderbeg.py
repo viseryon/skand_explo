@@ -1,5 +1,6 @@
 import argparse
 import base64
+import locale
 import os
 import pickle
 from copy import deepcopy
@@ -18,6 +19,9 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from pandas.io.formats.style import Styler
 from requests.exceptions import RequestException
+
+locale.setlocale(locale.LC_ALL, ("Polish_Poland", "1250"))
+
 
 SKANDERBEG_LINK = "https://skanderbeg.pm/api.php"
 SKANDERBEG_API_KEY_ENV_VAR_NAME = "SKANDERBEG_API_KEY"
@@ -118,17 +122,18 @@ class SkandStat:
                 colour = colours.get(tag, {}).get("colour")
                 ax.plot(self.data[tag], color=colour)
 
-                annotation = f"{tag} | {self.data[tag].iloc[-1]:_.2f}"
+                last_point = self.data[tag].iloc[-1]
+                annotation = f"{tag} | {last_point:n}"
                 ax.annotate(
                     f"{annotation}",
-                    (self.data.index.max() + 2, self.data[tag].iloc[-1]),
+                    (self.data.index.max() + 2, last_point),
                     fontsize=10,
                     color=colour,
-                    bbox={"facecolor": "black", "edgecolor": "white", "boxstyle": "round"},
+                    bbox={"facecolor": "black", "edgecolor": colour, "boxstyle": "round"},
                 )
 
             ax.set_yscale(y_scale)
-            formatter = FuncFormatter(lambda y, pos: f"{y:_.2f}")
+            formatter = FuncFormatter(lambda y, pos: f"{y:n}")
             ax.yaxis.set_major_formatter(formatter)
             ax.yaxis.set_minor_formatter(formatter)
             ax.legend(
@@ -286,19 +291,23 @@ class SkandStat:
         extension = extension if extension is not None else self.DEFAULT_EXPORT_EXTENSION
         dpi = dpi if dpi is not None else self.DEFAULT_DPI
 
-        file_name = f"{self.statistic}_by_{self.current_year}".upper()
-        export_path = CHARTS_PATH / Path(file_name).with_suffix(extension)
-
         if isinstance(viz, Figure):
+            file_name = f"{self.statistic}_by_{self.current_year}_line_chart".upper()
+            export_path = CHARTS_PATH / Path(file_name).with_suffix(extension)
+
             viz.savefig(export_path, dpi=dpi)
             return export_path
         if isinstance(viz, Styler):
+            file_name = f"{self.statistic}_by_{self.current_year}_table".upper()
+            export_path = CHARTS_PATH / Path(file_name).with_suffix(extension)
+
             dfi.export(
                 viz,  # type: ignore
                 export_path,
                 dpi=dpi,
             )
             return export_path
+
         msg = "`viz` is not an instance of `Styler` or `Figure`"
         raise TypeError(msg)
 
