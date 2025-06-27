@@ -482,7 +482,7 @@ class Analyzer:
         return self._tags
 
     def get_country_data(self) -> dict[int, Save]:
-        if self._downloaded_country_data:
+        if self._processed_country_data:
             return self.saves
 
         self._get_data(data_type="countriesData")
@@ -493,14 +493,8 @@ class Analyzer:
         return self.saves
 
     def get_provinces_data(self, *, add_base: bool = False) -> dict[int, Save]:
-        if self._downloaded_province_data:
-            return self.saves
-
         self._get_data(data_type="provincesData")
         self._process_provinces_data(add_base=add_base)
-
-        if add_base:
-            return self.saves
 
         return self.saves
 
@@ -519,6 +513,12 @@ class Analyzer:
             return self.saves
         if self.force_offline and not self.saves:
             raise ValueError
+
+        # if the data was already downloaded return
+        if data_type == "countriesData" and self._downloaded_country_data:
+            return self.saves
+        if data_type == "provincesData" and self._downloaded_province_data:
+            return self.saves
 
         if data_type == "countriesData":
             saves_to_download = {
@@ -656,6 +656,70 @@ class Analyzer:
 
         self._processed_country_data = True
 
+    def _process_provinces_data(self, *, add_base: bool = True) -> None:
+        base_provinces_data = None
+        if add_base:
+            base_provinces_path = DATA_PATH / "eu4provinces.geojson"
+
+            if not base_provinces_path.exists():
+                raise FileNotFoundError
+            base_provinces_data = gpd.read_file(base_provinces_path).set_index("province_id")
+
+        for save in self.saves.values():
+            if save.provinces_data is None:
+                raise ValueError
+
+            provinces = {
+                int(province_id): data
+                for province_id, data in save.provinces_data.items()
+                if isinstance(province_id, (str, int)) and str(province_id).isnumeric()
+            }
+
+            provinces_df = pd.DataFrame(provinces).T
+
+            dtype_map = {
+                "monument": pd.StringDtype(),
+                "name": pd.StringDtype(),
+                "owner": pd.StringDtype(),
+                "controller": pd.StringDtype(),
+                "culture": pd.StringDtype(),
+                "religion": pd.StringDtype(),
+                "base_tax": pd.Int64Dtype(),
+                "base_production": pd.Int64Dtype(),
+                "base_manpower": pd.Int64Dtype(),
+                "trade_goods": pd.StringDtype(),
+                "buildings_value": pd.Int64Dtype(),
+                # 'ownership_changes':,
+                # 'dev_improvement_values':,
+                # 'dev_improvements_values':,
+                # 'army':,
+                "casualties": pd.Int64Dtype(),
+                "improveCount": pd.Int64Dtype(),
+                "prosperity": pd.Float64Dtype(),
+                "devastation": pd.Float64Dtype(),
+                "fort_level": pd.Int64Dtype(),
+                "original_coloniser": pd.StringDtype(),
+                "active_trade_company": pd.BooleanDtype(),
+            }
+
+            existing_dtype_map = {k: v for k, v in dtype_map.items() if k in provinces_df.columns}
+            provinces_df = provinces_df.astype(existing_dtype_map, errors="ignore").fillna(pd.NA)
+
+            if add_base and base_provinces_data is not None:
+                provinces_df = provinces_df.merge(
+                    base_provinces_data,
+                    right_index=True,
+                    left_index=True,
+                    validate="one_to_one",
+                    suffixes=("", "__DROP"),
+                )
+                cols_to_drop = [col for col in provinces_df.columns if col.endswith("__DROP")]
+                provinces_df = provinces_df.drop(columns=cols_to_drop)
+
+            save.provinces_data = provinces_df
+
+        self._processed_province_data = True
+
     # selecting data
     def get_statistic(
         self,
@@ -735,74 +799,6 @@ class Analyzer:
     # MAIN LOOP
     # TODO: main loop
     def run(self): ...  # TODO: write `run()` function that will handle user interaction
-
-    # TODO: provinces data
-    def _process_provinces_data(self, *, add_base: bool = True) -> None:
-        if self._processed_province_data:
-            return
-
-        base_provinces_data = None
-        if add_base:
-            base_provinces_path = DATA_PATH / "eu4provinces.geojson"
-
-            if not base_provinces_path.exists():
-                raise FileNotFoundError
-            base_provinces_data = gpd.read_file(base_provinces_path).set_index("province_id")
-
-        for save in self.saves.values():
-            if save.provinces_data is None:
-                raise ValueError
-
-            provinces = {
-                int(province_id): data
-                for province_id, data in save.provinces_data.items()
-                if isinstance(province_id, (str, int)) and str(province_id).isnumeric()
-            }
-
-            provinces_df = pd.DataFrame(provinces).T
-
-            dtype_map = {
-                "monument": pd.StringDtype(),
-                "name": pd.StringDtype(),
-                "owner": pd.StringDtype(),
-                "controller": pd.StringDtype(),
-                "culture": pd.StringDtype(),
-                "religion": pd.StringDtype(),
-                "base_tax": pd.Int64Dtype(),
-                "base_production": pd.Int64Dtype(),
-                "base_manpower": pd.Int64Dtype(),
-                "trade_goods": pd.StringDtype(),
-                "buildings_value": pd.Int64Dtype(),
-                # 'ownership_changes':,
-                # 'dev_improvement_values':,
-                # 'dev_improvements_values':,
-                # 'army':,
-                "casualties": pd.Int64Dtype(),
-                "improveCount": pd.Int64Dtype(),
-                "prosperity": pd.Float64Dtype(),
-                "devastation": pd.Float64Dtype(),
-                "fort_level": pd.Int64Dtype(),
-                "original_coloniser": pd.StringDtype(),
-                "active_trade_company": pd.BooleanDtype(),
-            }
-
-            existing_dtype_map = {k: v for k, v in dtype_map.items() if k in provinces_df.columns}
-            provinces_df = provinces_df.astype(existing_dtype_map, errors="ignore").fillna(pd.NA)
-
-            if add_base and base_provinces_data is not None:
-                provinces_df = provinces_df.merge(
-                    base_provinces_data,
-                    right_index=True,
-                    left_index=True,
-                    validate="one_to_one",
-                    suffixes=("", "__DROP"),
-                )
-                cols_to_drop = [col for col in provinces_df.columns if col.endswith("__DROP")]
-                provinces_df = provinces_df.drop(columns=cols_to_drop)
-
-            save.provinces_data = provinces_df
-
-        self._processed_province_data = True
 
 
 def parse_args() -> argparse.Namespace:
