@@ -11,7 +11,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import dataframe_image as dfi
-import numpy as np
+import geopandas as gpd
 import pandas as pd
 import requests
 from matplotlib import pyplot as plt
@@ -30,6 +30,7 @@ ROOT_PATH = Path(__file__).resolve().parent.parent.parent
 CHARTS_PATH = ROOT_PATH / "charts"
 CONFIG_PATH = ROOT_PATH / "config"
 OUTPUT_PATH = ROOT_PATH / "output"
+DATA_PATH = ROOT_PATH / "data"
 CACHE_PATH = ROOT_PATH / "cache"
 
 CHARTS_PATH.mkdir(exist_ok=True)
@@ -63,7 +64,7 @@ class Save:
     augmented_campaign: str
     year: int
     country_data: dict | None = None
-    provinces_data: dict | None = None
+    provinces_data: dict | pd.DataFrame | None = None
 
     def __repr__(self) -> str:
         return (
@@ -319,11 +320,13 @@ class Analyzer:
         self._api_key: str | None = api_key
         self._save_dates: list[int] | None = None
         self._tags: dict[str, dict] | None = None
-        self._downloaded_country_data: bool = False
-        self._downloaded_province_data: bool = False
         self.saves: dict[int, Save] = {}
         self.force_offline: bool = force_offline
+        self._downloaded_country_data: bool = False
+        self._downloaded_province_data: bool = False
         self._downloaded_flags: bool = False
+        self._processed_country_data: bool = False
+        self._processed_province_data: bool = False
 
     def read_cached_data(self) -> dict[int, Save]:
         cached_saves = Path(CACHE_PATH / "saves.pkl")
@@ -489,11 +492,17 @@ class Analyzer:
 
         return self.saves
 
-    def get_provinces_data(self) -> dict[int, Save]:
+    def get_provinces_data(self, *, add_base: bool = False) -> dict[int, Save]:
         if self._downloaded_province_data:
             return self.saves
 
-        return self._get_data(data_type="provincesData")
+        self._get_data(data_type="provincesData")
+        self._process_provinces_data(add_base=add_base)
+
+        if add_base:
+            return self.saves
+
+        return self.saves
 
     def _get_data(self, *, data_type: str) -> dict[int, Save]:
         if data_type not in {"countriesData", "provincesData"}:
@@ -556,6 +565,9 @@ class Analyzer:
     def _process_country_data(self) -> None:
         if (current_save_data := self.current_save.country_data) is None:
             raise ValueError
+
+        if self._processed_country_data:
+            return
 
         # overwrite tags (with current ones) that players used to form other tags
         # this will ensure continuity of tags in the game
@@ -642,6 +654,8 @@ class Analyzer:
                     # delete previous tag data, so it doesn't pollute the data
                     del country_data[prev_tag]
 
+        self._processed_country_data = True
+
     # selecting data
     def get_statistic(
         self,
@@ -722,87 +736,73 @@ class Analyzer:
     # TODO: main loop
     def run(self): ...  # TODO: write `run()` function that will handle user interaction
 
+    # TODO: provinces data
+    def _process_provinces_data(self, *, add_base: bool = True) -> None:
+        if self._processed_province_data:
+            return
 
-# TODO: provinces data
+        base_provinces_data = None
+        if add_base:
+            base_provinces_path = DATA_PATH / "eu4provinces.geojson"
 
+            if not base_provinces_path.exists():
+                raise FileNotFoundError
+            base_provinces_data = gpd.read_file(base_provinces_path).set_index("province_id")
 
-def prepare_provinces_data(data: dict[int, dict]) -> pd.DataFrame:
-    """Prepares province data from skanderbeg
+        for save in self.saves.values():
+            if save.provinces_data is None:
+                raise ValueError
 
-    Args:
-        data (dict[int, dict]): dict with raw province data from skanderbeg
+            provinces = {
+                int(province_id): data
+                for province_id, data in save.provinces_data.items()
+                if isinstance(province_id, (str, int)) and str(province_id).isnumeric()
+            }
 
-    Returns:
-        pd.DataFrame: dataframe with statistics for each province for each year
+            provinces_df = pd.DataFrame(provinces).T
 
-    """
-    dates = list(data.keys())
-    master = pd.DataFrame()
-    for date in dates:
-        provinces = {}
-        provs = [prov_num for prov_num in data[date] if prov_num.isnumeric()]
-        (
-            owner,
-            culture,
-            religion,
-            tax,
-            prod,
-            manp,
-            trade_good,
-            buildings_value,
-            improve_count,
-            casualties,
-            prosperity,
-        ) = ([], [], [], [], [], [], [], [], [], [], [])
-        for prov in provs:
-            prov = data[date][prov]
-            owner.append(prov.get("owner", np.nan))
-            culture.append(prov.get("culture", np.nan))
-            religion.append(prov.get("religion", np.nan))
-            tax.append(prov.get("base_tax", np.nan))
-            prod.append(prov.get("base_production", np.nan))
-            manp.append(prov.get("base_manpower", np.nan))
-            trade_good.append(prov.get("trade_goods", np.nan))
-            buildings_value.append(prov.get("buildings_value", np.nan))
-            improve_count.append(prov.get("improveCount", np.nan))
-            casualties.append(prov.get("casualties", np.nan))
-            prosperity.append(prov.get("prosperity", np.nan))
+            dtype_map = {
+                "monument": pd.StringDtype(),
+                "name": pd.StringDtype(),
+                "owner": pd.StringDtype(),
+                "controller": pd.StringDtype(),
+                "culture": pd.StringDtype(),
+                "religion": pd.StringDtype(),
+                "base_tax": pd.Int64Dtype(),
+                "base_production": pd.Int64Dtype(),
+                "base_manpower": pd.Int64Dtype(),
+                "trade_goods": pd.StringDtype(),
+                "buildings_value": pd.Int64Dtype(),
+                # 'ownership_changes':,
+                # 'dev_improvement_values':,
+                # 'dev_improvements_values':,
+                # 'army':,
+                "casualties": pd.Int64Dtype(),
+                "improveCount": pd.Int64Dtype(),
+                "prosperity": pd.Float64Dtype(),
+                "devastation": pd.Float64Dtype(),
+                "fort_level": pd.Int64Dtype(),
+                "original_coloniser": pd.StringDtype(),
+                "active_trade_company": pd.BooleanDtype(),
+            }
 
-        provinces["id"] = provs
-        provinces["year"] = date
-        provinces["tag"] = owner
-        provinces["culture"] = culture
-        provinces["religion"] = religion
-        provinces["tax"] = tax
-        provinces["prod"] = prod
-        provinces["manp"] = manp
-        provinces["trade_good"] = trade_good
-        provinces["buildings_value"] = buildings_value
-        provinces["improve_count"] = improve_count
-        provinces["casualties"] = casualties
-        provinces["prosperity"] = prosperity
-        df = pd.DataFrame(provinces)
+            existing_dtype_map = {k: v for k, v in dtype_map.items() if k in provinces_df.columns}
+            provinces_df = provinces_df.astype(existing_dtype_map, errors="ignore").fillna(pd.NA)
 
-        if master.empty:
-            master = df
-        else:
-            master = pd.concat([master, df])
+            if add_base and base_provinces_data is not None:
+                provinces_df = provinces_df.merge(
+                    base_provinces_data,
+                    right_index=True,
+                    left_index=True,
+                    validate="one_to_one",
+                    suffixes=("", "__DROP"),
+                )
+                cols_to_drop = [col for col in provinces_df.columns if col.endswith("__DROP")]
+                provinces_df = provinces_df.drop(columns=cols_to_drop)
 
-    master = master.astype(
-        {
-            "id": int,
-            "tax": float,
-            "prod": float,
-            "manp": float,
-            "improve_count": float,
-            "casualties": float,
-            "prosperity": float,
-        },
-    )
+            save.provinces_data = provinces_df
 
-    master["dev"] = master["tax"] + master["prod"] + master["manp"]
-
-    return master
+        self._processed_province_data = True
 
 
 def parse_args() -> argparse.Namespace:
