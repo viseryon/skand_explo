@@ -811,7 +811,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    api_key = os.environ.get(SKANDERBEG_API_KEY_ENV_VAR_NAME) or args.api_key
+    api_key = args.api_key or os.environ.get(SKANDERBEG_API_KEY_ENV_VAR_NAME)
     force_offline = args.force_offline
 
     analyzer = Analyzer(api_key=api_key, force_offline=force_offline)
