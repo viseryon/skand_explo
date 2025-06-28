@@ -12,6 +12,8 @@ from pathlib import Path
 
 import dataframe_image as dfi
 import geopandas as gpd
+import matplotlib.colors
+import matplotlib.patheffects as path_effects
 import pandas as pd
 import requests
 from matplotlib import pyplot as plt
@@ -107,6 +109,7 @@ class SkandStat:
         y_scale: str = "log",
         figsize: tuple[int, int] | None = None,
         style: str | None = None,
+        emphesize_tag: str | None = None,
     ) -> Figure:
         figsize = figsize or self.DEFAULT_FIGSIZE
         colours = {} if not self.tags else self.tags
@@ -120,18 +123,62 @@ class SkandStat:
                 if tag == "WORLD":
                     continue
 
-                colour = colours.get(tag, {}).get("colour")
-                ax.plot(self.data[tag], color=colour)
+                colour = colours.get(tag, {}).get("colour", "#ffffff")
+                rgb = matplotlib.colors.to_rgb(colour)
+
+                if not emphesize_tag:
+                    zorder = 2
+                    viz_effects = []
+                    text_effects = []
+                elif tag == emphesize_tag:
+                    zorder = 10
+                    max_alpha = 20
+                    min_alpha = 10
+                    viz_effects: list[path_effects.AbstractPathEffect] = [
+                        path_effects.Stroke(
+                            foreground=rgb,
+                            linewidth=max_alpha - i,
+                            alpha=i / 100,
+                        )
+                        for i in range(min_alpha, max_alpha)
+                    ]
+                    viz_effects.extend([
+                        path_effects.withSimplePatchShadow(
+                            shadow_rgbFace=rgb,
+                            alpha=min_alpha / 100,
+                        ),
+                    ])
+                    text_effects = []
+                else:
+                    zorder = 2
+                    viz_effects = [path_effects.Stroke(foreground=rgb, alpha=0.25)]
+                    text_effects = [path_effects.Stroke(foreground=rgb, alpha=0.25)]
+
+                ax.plot(
+                    self.data[tag],
+                    color=rgb,
+                    zorder=zorder,
+                    path_effects=viz_effects,
+                )
 
                 last_point = self.data[tag].iloc[-1]
                 annotation = f"{tag} | {last_point:n}"
-                ax.annotate(
+                ann = ax.annotate(
                     f"{annotation}",
                     (self.data.index.max() + 2, last_point),
                     fontsize=10,
-                    color=colour,
-                    bbox={"facecolor": "black", "edgecolor": colour, "boxstyle": "round"},
+                    color=rgb,
+                    zorder=zorder,
+                    bbox={
+                        "facecolor": "black",
+                        "edgecolor": rgb,
+                        "boxstyle": "round",
+                    },
+                    path_effects=text_effects,
                 )
+                bbox_patch = ann.get_bbox_patch()
+                if bbox_patch:
+                    bbox_patch.set_path_effects(viz_effects)
 
             ax.set_yscale(y_scale)
             formatter = FuncFormatter(lambda y, pos: f"{y:n}")
@@ -288,12 +335,16 @@ class SkandStat:
         viz: Figure | Styler,
         dpi: int | None = None,
         extension: str | None = None,
+        **kwargs,
     ) -> Path:
         extension = extension if extension is not None else self.DEFAULT_EXPORT_EXTENSION
         dpi = dpi if dpi is not None else self.DEFAULT_DPI
 
         if isinstance(viz, Figure):
-            file_name = f"{self.statistic}_by_{self.current_year}_line_chart".upper()
+            emphesize_tag = kwargs.get("emphesize_tag", "")
+            emphesize_tag = "_" + emphesize_tag if emphesize_tag else ""
+
+            file_name = f"{self.statistic}_by_{self.current_year}_line_chart{emphesize_tag}".upper()
             export_path = CHARTS_PATH / Path(file_name).with_suffix(extension)
 
             viz.savefig(export_path, dpi=dpi)
@@ -795,6 +846,8 @@ class Analyzer:
             save_dates=self.save_dates,
             include_world=False,
         )
+
+    # TODO: export data
 
     # MAIN LOOP
     # TODO: main loop
