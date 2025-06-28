@@ -194,7 +194,7 @@ class SkandStat:
                 shadow=True,
             )
             ax.set_title(
-                f"{self.statistic.upper().replace('_', ' ')} BY {self.current_year}",
+                f"{self.statistic.upper().replace('_', ' ')}",
                 fontsize="xx-large",
                 fontstretch="semi-expanded",
                 fontweight="roman",
@@ -319,7 +319,10 @@ class SkandStat:
 
         # set caption
         caption = (
-            self.statistic  # + f"<br>as % of world's {self.statistic}" if self.include_world else ""
+            self.statistic.replace(
+                "_",
+                "",
+            )  # + f"<br>as % of world's {self.statistic}" if self.include_world else ""
         )
         styler = styler.set_caption(caption.upper())
 
