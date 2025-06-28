@@ -3,12 +3,14 @@ import base64
 import locale
 import os
 import pickle
+import sys
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from io import BytesIO
 from itertools import pairwise
 from pathlib import Path
+from typing import NoReturn
 
 import dataframe_image as dfi
 import geopandas as gpd
@@ -20,6 +22,7 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from pandas.io.formats.style import Styler
+from PIL import Image
 from requests.exceptions import RequestException
 
 locale.setlocale(locale.LC_ALL, ("Polish_Poland", "1250"))
@@ -848,10 +851,115 @@ class Analyzer:
         )
 
     # TODO: export data
+    def export_data(self): ...
 
     # MAIN LOOP
-    # TODO: main loop
-    def run(self): ...  # TODO: write `run()` function that will handle user interaction
+    # TODO: work on the main loop
+    def run(self) -> NoReturn:
+        def clear_console() -> None:
+            # Clear console based on the operating system
+            if os.name == "nt":
+                command = "cls"
+                os.system(command)  # For Windows  # noqa: S605
+            else:
+                command = "clear"
+                os.system(command)  # For Unix/Linux/Mac  # noqa: S605
+
+        def prompt_menu() -> str:
+            print(
+                "\nSkanderbeg Analyzer Main Menu:",
+                "1. Download, process, and analyze country data",
+                "2. Download, process, and save provinces data",
+                "3. Exit",
+                sep="\n",
+            )
+            inp = input("Choose an option (1-3): ").strip()
+            clear_console()
+            return inp
+
+        def prompt_statistic() -> str | None:
+            print("\nAvailable statistics:")
+            for i, stat in enumerate(ALL_STATS, 1):
+                print(f"{i}. {stat}")
+            while True:
+                choice = input(f"Select statistic (1 - {len(ALL_STATS)}): ").strip()
+                if choice == "q":
+                    return None
+
+                if choice.isdigit() and 1 <= int(choice) <= len(ALL_STATS):
+                    clear_console()
+                    return ALL_STATS[int(choice) - 1]
+                print("Invalid choice. Try again.")
+
+        def country_data_segment() -> None:
+            print("\n--- Country Data Analysis ---")
+            try:
+                self.get_country_data()
+            except Exception as e:
+                print(f"Error downloading/processing country data: {e}")
+                return
+
+            while True:
+                chosen_stat = prompt_statistic()
+                if chosen_stat is None:
+                    clear_console()
+                    break
+                try:
+                    stat = self.get_statistic(statistic=chosen_stat)
+                except Exception as e:
+                    clear_console()
+                    print(f"Error getting statistic: {e}")
+                    continue
+
+                # table part
+                table = None
+                try:
+                    table = stat.table()
+                    if table is not None:
+                        table_path = stat.export_viz(table)
+                        print(f"Table saved to: {table_path}")
+                        img = Image.open(table_path)
+                        img.show()
+
+                except Exception as e:
+                    clear_console()
+                    print(f"Table error: {e}")
+
+                # chart part
+                fig = None
+                try:
+                    fig = stat.line_chart()
+                    plt.show()
+                    if fig is not None:
+                        fig_path = stat.export_viz(fig)
+                        print(f"Table saved to: {fig_path}")
+                except Exception as e:
+                    clear_console()
+                    print(f"Chart error: {e}")
+
+        def province_data_segment() -> None:
+            print("\n--- Provinces Data Download/Process ---")
+            add_base = input("Merge with base province data? (y/n): ").strip().lower() == "y"
+            try:
+                self.get_provinces_data(add_base=add_base)
+                print("Provinces data downloaded and processed.")
+            except Exception as e:
+                clear_console()
+                print(f"Error: {e}")
+
+        while True:
+            choice = prompt_menu()
+            if choice == "1":
+                country_data_segment()
+            elif choice == "2":
+                province_data_segment()
+            elif choice in {"3", "q"}:
+                print("Exiting.")
+                sys.exit()
+            else:
+                clear_console()
+                print("Invalid option. Try again.")
+                sys.exit()
 
 
 def parse_args() -> argparse.Namespace:
