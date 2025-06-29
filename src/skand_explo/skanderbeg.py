@@ -1,12 +1,19 @@
+"""Skanderbeg Analyzer.
+
+This module provides tools for downloading (via Skanderbeg.pm),
+processing, and analyzing EU4 save data,
+including country and province statistics, visualizations, and data exports.
+"""
+
 import argparse
 import base64
+import datetime
 import locale
 import os
 import pickle
 import sys
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import date, datetime
 from io import BytesIO
 from itertools import pairwise
 from pathlib import Path
@@ -44,27 +51,71 @@ CACHE_PATH.mkdir(exist_ok=True)
 
 ALL_STATS = Path(CONFIG_PATH / "available_stats.txt").read_text(encoding="utf-8").splitlines()
 
-# TODO: docs
-# TODO: type hints
-
 
 @dataclass
 class Save:
+    """Represents a game save with associated metadata and data.
+
+    Attributes
+    ----------
+    id: str
+        Unique identifier for the save.
+    hash: str
+        Hash value of the save file.
+    timestamp: datetime
+        Timestamp when the save was created or uploaded.
+    name: str
+        Name of the save.
+    uploaded_by: str
+        Name of the uploader.
+    version: str
+        Game version associated with the save.
+    player: str
+        Name of the player.
+    multiplayer: bool
+        Indicates if the save is from a multiplayer game.
+    date: date
+        In-game date of the save.
+    custom_name: str
+        Custom name assigned to the save.
+    game: str
+        Name of the game.
+    mods: str
+        List or description of mods used.
+    linked_sheet: str
+        Link to an associated spreadsheet or document.
+    options: str
+        Game options or settings used.
+    last_visited: datetime
+        Timestamp of the last visit or access.
+    view_count: int
+        Number of times the save has been viewed.
+    augmented_campaign: str
+        Information about any augmented campaign.
+    year: int
+        In-game year of the save.
+    country_data: dict or None, optional
+        Data related to countries in the save.
+    provinces_data: dict or pandas.DataFrame or None, optional
+        Data related to provinces in the save.
+
+    """
+
     id: str
     hash: str
-    timestamp: datetime
+    timestamp: datetime.datetime
     name: str
     uploaded_by: str
     version: str
     player: str
     multiplayer: bool
-    date: date
+    date: datetime.date
     custom_name: str
     game: str
     mods: str
     linked_sheet: str
     options: str
-    last_visited: datetime
+    last_visited: datetime.datetime
     view_count: int
     augmented_campaign: str
     year: int
@@ -72,6 +123,14 @@ class Save:
     provinces_data: dict | pd.DataFrame | None = None
 
     def __repr__(self) -> str:
+        """Return a string representation of the Save instance.
+
+        Returns
+        -------
+        str
+            A string summarizing the object's class and main attributes.
+
+        """
         return (
             f"{self.__class__.__name__}("
             f"year={self.year}, player={self.player}, hash={self.hash}, "
@@ -82,6 +141,69 @@ class Save:
 
 @dataclass(frozen=True)
 class SkandStat:
+    """Represent a statistic with convenient methods.
+
+    A class for statistical analysis and visualization of time series data,
+    with support for custom tags, CAGR calculation, and styled export.
+
+    Parameters
+    ----------
+    statistic: str
+        The name of the statistic being analyzed.
+    data: pd.DataFrame
+        The main data, indexed by year, with columns representing different tags/entities.
+    tags: dict[str, dict], optional
+        A dictionary mapping tag names to metadata dictionaries (e.g., color, flag).
+    save_dates: list[int], optional
+        List of years to include in visualizations and tables. If None, uses all years in `data`.
+    include_world: bool, default=True
+        Whether to include the "WORLD" column in analysis and visualizations.
+
+    Attributes
+    ----------
+    DEFAULT_FIGSIZE: tuple[int, int]
+        Default figure size for visualizations.
+    DEFAULT_DPI: int
+        Default DPI for exported figures.
+    DEFAULT_STYLE: str
+        Default matplotlib style for plots.
+    DEFAULT_EXPORT_EXTENSION: str
+        Default file extension for exported visualizations.
+
+    Methods
+    -------
+    __repr__()
+        Return a string representation of the SkandStat instance.
+    current_year
+        Return the most recent year in `save_dates` or in the data index.
+    line_chart(y_scale='log', figsize=None, style=None, emphesize_tag=None)
+        Generate a matplotlib Figure with a line chart of the data.
+    data_with_cagr()
+        Return a DataFrame with Compound Annual Growth Rate (CAGR) columns inserted between years.
+    table(with_cagr=True)
+        Return a pandas Styler object for the data, optionally including CAGR columns
+        and custom formatting.
+    export_viz(viz, dpi=None, extension=None, **kwargs)
+        Export a visualization (matplotlib Figure or pandas Styler) to a file.
+
+    Notes
+    -----
+    - The class is designed for statistical exploration and presentation of time series data,
+      with a focus on visual clarity and customizability.
+    - Tag metadata can include colors and flags for enhanced visualization and table styling.
+    - CAGR calculations are inserted between years and for the total period.
+    - Exported visualizations are saved to a predefined `CHARTS_PATH`.
+
+    Examples
+    --------
+    >>> stat = Analyzer.get_statistic('max_manpower')
+    >>> fig = stat.line_chart(emphesize_tag="FRA")
+    >>> stat.export_viz(fig)
+    >>> styler = stat.table()
+    >>> stat.export_viz(styler)
+
+    """
+
     statistic: str
     data: pd.DataFrame
     tags: dict[str, dict] | None = None
@@ -94,6 +216,14 @@ class SkandStat:
     DEFAULT_EXPORT_EXTENSION: str = field(default=".png", init=False, repr=False)
 
     def __repr__(self) -> str:
+        """Return a string representation of the object for debugging.
+
+        Returns
+        -------
+        str
+            A string representation of the object.
+
+        """
         return (
             f"{self.__class__.__name__}"
             f"({self.statistic=}, "
@@ -103,6 +233,21 @@ class SkandStat:
 
     @property
     def current_year(self) -> int:
+        """Returns the most recent year from the available data.
+
+        If `save_dates` is not set, the method returns the maximum value from the data index.
+        Otherwise, it returns the maximum value from `save_dates`.
+
+        Returns
+        -------
+        int
+            The most recent year available.
+
+        Notes
+        -----
+        Assumes that `self.data.index` and `self.save_dates` contain year values.
+
+        """
         if self.save_dates is None:
             return self.data.index.max()
         return max(self.save_dates)
@@ -114,6 +259,25 @@ class SkandStat:
         style: str | None = None,
         emphesize_tag: str | None = None,
     ) -> Figure:
+        """Generate a matplotlib Figure with a line chart of the data.
+
+        Parameters
+        ----------
+        y_scale : str, default="log"
+            Y-axis scale (e.g., "log", "linear").
+        figsize : tuple[int, int], optional
+            Figure size. If None, uses default.
+        style : str, optional
+            Matplotlib style to use. If None, uses default.
+        emphesize_tag : str, optional
+            Tag to emphasize in the plot.
+
+        Returns
+        -------
+        Figure
+            The matplotlib Figure object containing the line chart.
+
+        """
         figsize = figsize or self.DEFAULT_FIGSIZE
         colours = {} if not self.tags else self.tags
         dates = self.data.index if not self.save_dates else self.save_dates
@@ -184,7 +348,7 @@ class SkandStat:
                     bbox_patch.set_path_effects(viz_effects)
 
             ax.set_yscale(y_scale)
-            formatter = FuncFormatter(lambda y, pos: f"{y:n}")
+            formatter = FuncFormatter(lambda y, _: f"{y:n}")
             ax.yaxis.set_major_formatter(formatter)
             ax.yaxis.set_minor_formatter(formatter)
             ax.legend(
@@ -211,6 +375,14 @@ class SkandStat:
             return fig
 
     def data_with_cagr(self) -> pd.DataFrame:
+        """Return a DataFrame with CAGR columns inserted between years and for the total period.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with CAGR columns between years and for the total period.
+
+        """
         data = self.data.T
 
         min_year = data.columns.min()
@@ -227,6 +399,19 @@ class SkandStat:
         return data
 
     def table(self, *, with_cagr: bool = True) -> Styler:
+        """Return a custom pandas Styler object for the data, optionally including CAGR columns.
+
+        Parameters
+        ----------
+        with_cagr : bool, default=True
+            Whether to include CAGR columns in the table.
+
+        Returns
+        -------
+        Styler
+            A pandas Styler object for the data table.
+
+        """
         data = self.data_with_cagr() if with_cagr else self.data.T
 
         # sort by CAGR from whole campaign
@@ -332,9 +517,7 @@ class SkandStat:
             new_cols,
         ]
         styler = styler.highlight_max(color="darkgreen", subset=subset, axis="index")  # type: ignore
-        styler = styler.highlight_min(color="darkred", subset=subset, axis="index")  # type: ignore
-
-        return styler
+        return styler.highlight_min(color="darkred", subset=subset, axis="index")  # type: ignore
 
     def export_viz(
         self,
@@ -343,6 +526,30 @@ class SkandStat:
         extension: str | None = None,
         **kwargs,
     ) -> Path:
+        """Export a visualization (matplotlib Figure or pandas Styler) to a file.
+
+        Parameters
+        ----------
+        viz : Figure or Styler
+            The visualization object to export.
+        dpi : int, optional
+            Dots per inch for the export. If None, uses default.
+        extension : str, optional
+            File extension for the export. If None, uses default.
+        **kwargs
+            Additional keyword arguments for export.
+
+        Returns
+        -------
+        Path
+            Path to the exported file.
+
+        Raises
+        ------
+        TypeError
+            If `viz` is not a matplotlib Figure or pandas Styler.
+
+        """
         extension = extension if extension is not None else self.DEFAULT_EXPORT_EXTENSION
         dpi = dpi if dpi is not None else self.DEFAULT_DPI
 
@@ -371,9 +578,24 @@ class SkandStat:
 
 
 class Analyzer:
+    """Analyzer for Skanderbeg EU4 data.
+
+    Provides methods to download, process, and analyze EU4 save data, including country and province statistics.
+    """
+
     _EU4_START_DATE: int = 1444
 
-    def __init__(self, api_key: str | None = None, *, force_offline: bool = False):
+    def __init__(self, api_key: str | None = None, *, force_offline: bool = False) -> None:
+        """Initialize the Analyzer.
+
+        Parameters
+        ----------
+        api_key : str, optional
+            API key for Skanderbeg.pm.
+        force_offline : bool, default=False
+            If True, only use cached data and do not attempt to download.
+
+        """
         self._api_key: str | None = api_key
         self._save_dates: list[int] | None = None
         self._tags: dict[str, dict] | None = None
@@ -385,14 +607,32 @@ class Analyzer:
         self._processed_country_data: bool = False
         self._processed_province_data: bool = False
 
-    def read_cached_data(self) -> dict[int, Save]:
+    @staticmethod
+    def read_cached_data() -> dict[int, Save]:
+        """Read cached save data from disk.
+
+        Returns
+        -------
+        dict[int, Save]
+            Dictionary of saves loaded from cache, or empty dict if not found.
+
+        """
         cached_saves = Path(CACHE_PATH / "saves.pkl")
         if cached_saves.exists():
             with cached_saves.open("rb") as f:
                 return pickle.load(f)
         return {}
 
-    def read_cached_tags(self) -> dict[str, dict]:
+    @staticmethod
+    def read_cached_tags() -> dict[str, dict]:
+        """Read cached tags from disk.
+
+        Returns
+        -------
+        dict[str, dict]
+            Dictionary of tags loaded from cache, or empty dict if not found.
+
+        """
         cached_tags = Path(CACHE_PATH / "tags.pkl")
         if cached_tags.exists():
             with cached_tags.open("rb") as f:
@@ -401,6 +641,14 @@ class Analyzer:
 
     @property
     def tags(self) -> dict[str, dict]:
+        """Return tags dictionary, loading from cache or config if necessary.
+
+        Returns
+        -------
+        dict[str, dict]
+            Dictionary of tags and their metadata.
+
+        """
         if self._tags:
             return self._tags
 
@@ -416,6 +664,14 @@ class Analyzer:
 
     @property
     def save_dates(self) -> list[int]:
+        """Return sorted list of save years.
+
+        Returns
+        -------
+        list[int]
+            Sorted list of years for which saves are available.
+
+        """
         if self._save_dates:
             return self._save_dates
         if not self.saves:
@@ -425,17 +681,46 @@ class Analyzer:
 
     @property
     def current_year(self) -> int:
+        """Return the most recent year for which a save is available.
+
+        Returns
+        -------
+        int
+            The most recent year.
+
+        """
         if not self.save_dates:
             self.get_save_metadata()
         return max(self.save_dates)
 
     @property
     def current_save(self) -> Save:
+        """Return the Save object for the most recent year.
+
+        Returns
+        -------
+        Save
+            The Save object for the current year.
+
+        """
         if not self.save_dates:
             self.get_save_metadata()
         return self.saves[self.current_year]
 
     def get_save_metadata(self) -> dict[int, Save]:
+        """Download or load metadata for all saves.
+
+        Returns
+        -------
+        dict[int, Save]
+            Dictionary of saves indexed by year.
+
+        Raises
+        ------
+        RequestException
+            If the request for a flag fails (e.g., network error, invalid response).
+
+        """
         if self.saves:
             return self.saves
 
@@ -455,18 +740,18 @@ class Analyzer:
 
             timestamp = save_data["timestamp"]
             # timestamp format '2025-06-17 01:00:09'
-            timestamp = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+            timestamp = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
 
             date = save_data["date"]
             # date format '1615.2.15'
-            date = datetime.strptime(date, "%Y.%m.%d").date()  # noqa: DTZ007
+            date = datetime.datetime.strptime(date, "%Y.%m.%d").date()  # noqa: DTZ007
             year = date.year
 
             multiplayer = save_data["multiplayer"] == "yes"
 
             last_visited = save_data["lastVisited"]
             # date format '2025-06-17 01:00:09'
-            last_visited = datetime.strptime(last_visited, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+            last_visited = datetime.datetime.strptime(last_visited, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
 
             view_count = save_data["viewCount"]
             view_count = int(view_count)
@@ -498,6 +783,19 @@ class Analyzer:
         return saves
 
     def get_country_flags(self) -> dict[str, dict]:
+        """Download and cache country flags for all tags.
+
+        Returns
+        -------
+        dict[str, dict]
+            Dictionary of tags with flag data added.
+
+        Raises
+        ------
+        RequestException
+            If the request for a flag fails (e.g., network error, invalid response).
+
+        """
         if self.force_offline or self._downloaded_flags:
             return self.tags
 
@@ -539,6 +837,14 @@ class Analyzer:
         return self._tags
 
     def get_country_data(self) -> dict[int, Save]:
+        """Download and process country data for all saves.
+
+        Returns
+        -------
+        dict[int, Save]
+            Dictionary of saves with country data processed.
+
+        """
         if self._processed_country_data:
             return self.saves
 
@@ -550,6 +856,19 @@ class Analyzer:
         return self.saves
 
     def get_provinces_data(self, *, add_base: bool = False) -> dict[int, Save]:
+        """Download and process provinces data for all saves.
+
+        Parameters
+        ----------
+        add_base : bool, default=False
+            Whether to merge with base province data from geojson.
+
+        Returns
+        -------
+        dict[int, Save]
+            Dictionary of saves with provinces data processed.
+
+        """
         self._get_data(data_type="provincesData")
         self._process_provinces_data(add_base=add_base)
 
@@ -785,6 +1104,28 @@ class Analyzer:
         tags: dict[str, dict] | None = None,
         include_world: bool = True,
     ) -> SkandStat:
+        """Return a SkandStat object for the given statistic.
+
+        Parameters
+        ----------
+        statistic : str
+            Name of the statistic to retrieve.
+        tags : dict[str, dict], optional
+            Tags to include. If None, uses all tags.
+        include_world : bool, default=True
+            Whether to include the 'WORLD' column in the result.
+
+        Returns
+        -------
+        SkandStat
+            SkandStat object containing the requested statistic.
+
+        Raises
+        ------
+        ValueError
+            If required country data is missing for any save.
+
+        """
         if tags is None:
             tags = self.tags
 
@@ -854,12 +1195,16 @@ class Analyzer:
         )
 
     # TODO: export data
-    def export_data(self): ...
+    def export_data(self) -> None:
+        """Export data to file (not yet implemented)."""
 
     # MAIN LOOP
     # TODO: work on the main loop
     def run(self) -> NoReturn:
+        """Run the main interactive loop for the analyzer."""
+
         def clear_console() -> None:
+            """Clear the console based on the operating system."""
             # Clear console based on the operating system
             if os.name == "nt":
                 command = "cls"
@@ -869,6 +1214,14 @@ class Analyzer:
                 os.system(command)  # For Unix/Linux/Mac  # noqa: S605
 
         def prompt_menu() -> str:
+            """Prompt the user for the main menu option.
+
+            Returns
+            -------
+            str
+                The user's menu choice.
+
+            """
             print(
                 "\nSkanderbeg Analyzer Main Menu:",
                 "1. Download, process, and analyze country data",
@@ -881,6 +1234,14 @@ class Analyzer:
             return inp
 
         def prompt_statistic() -> str | None:
+            """Prompt the user to select a statistic.
+
+            Returns
+            -------
+            str or None
+                The selected statistic, or None if the user quits.
+
+            """
             print("\nAvailable statistics:")
             for i, stat in enumerate(ALL_STATS, 1):
                 print(f"{i}. {stat}")
@@ -895,6 +1256,7 @@ class Analyzer:
                 print("Invalid choice. Try again.")
 
         def country_data_segment() -> None:
+            """Handle the country data analysis segment."""
             print("\n--- Country Data Analysis ---")
             try:
                 self.get_country_data()
@@ -941,6 +1303,7 @@ class Analyzer:
                     print(f"Chart error: {e}")
 
         def province_data_segment() -> None:
+            """Handle the provinces data download/process segment."""
             print("\n--- Provinces Data Download/Process ---")
             add_base = input("Merge with base province data? (y/n): ").strip().lower() == "y"
             try:
@@ -966,6 +1329,14 @@ class Analyzer:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the Skanderbeg Analyzer.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed command-line arguments.
+
+    """
     parser = argparse.ArgumentParser(description="SkandParser")
     parser.add_argument("--api-key", type=str, help="api key to skanderbeg.pm")
     parser.add_argument("--force-offline", action="store_true", help="run in offline mode")
@@ -973,6 +1344,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Read command-line arguments, initialize Analyzer and run it."""
     args = parse_args()
 
     api_key = args.api_key or os.environ.get(SKANDERBEG_API_KEY_ENV_VAR_NAME)

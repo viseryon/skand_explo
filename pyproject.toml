@@ -79,4 +79,4 @@ build-backend = "hatchling.build"
 skand_explo = "skand_explo.skanderbeg:main"
 
 [tool.ruff.lint]
-ignore = ["TD002", "TD003", "S301", "PGH003"]
+ignore = ["TD002", "TD003", "S301", "PGH003", "T201"]
