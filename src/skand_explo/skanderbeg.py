@@ -50,6 +50,7 @@ OUTPUT_PATH.mkdir(exist_ok=True)
 CACHE_PATH.mkdir(exist_ok=True)
 
 ALL_STATS = Path(CONFIG_PATH / "available_stats.txt").read_text(encoding="utf-8").splitlines()
+ALL_STATS.sort()
 
 
 @dataclass
@@ -506,7 +507,7 @@ class SkandStat:
         caption = (
             self.statistic.replace(
                 "_",
-                "",
+                " ",
             )  # + f"<br>as % of world's {self.statistic}" if self.include_world else ""
         )
         styler = styler.set_caption(caption.upper())
@@ -826,8 +827,12 @@ class Analyzer:
                 flag = base64.b64decode(response)
                 flag = BytesIO(flag)
 
-                picture = plt.imread(flag, format="png")
-                plt.imsave(OUTPUT_PATH / f"{tag}.png", picture)
+                try:
+                    picture = plt.imread(flag, format="png")
+                except SyntaxError:
+                    pass
+                else:
+                    plt.imsave(OUTPUT_PATH / f"{tag}.png", picture)
 
             self._downloaded_flags = True
 
