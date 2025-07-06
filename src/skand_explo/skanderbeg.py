@@ -28,7 +28,7 @@ import pandas as pd
 import requests
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import ScalarFormatter
 from pandas.io.formats.style import Styler
 from PIL import Image
 from requests.exceptions import RequestException
@@ -331,7 +331,8 @@ class SkandStat:
                 )
 
                 last_point = self.data[tag].iloc[-1]
-                annotation = f"{tag} | {last_point:n}"
+                formatted_last_point = locale.format_string("%.0f", last_point, grouping=True)
+                annotation = f"{tag} | {formatted_last_point}"
                 ann = ax.annotate(
                     f"{annotation}",
                     (self.data.index.max() + 2, last_point),
@@ -350,9 +351,10 @@ class SkandStat:
                     bbox_patch.set_path_effects(viz_effects)
 
             ax.set_yscale(y_scale)
-            formatter = FuncFormatter(lambda y, _: f"{y:n}")
-            ax.yaxis.set_major_formatter(formatter)
-            ax.yaxis.set_minor_formatter(formatter)
+            scalar_formatter = ScalarFormatter(useLocale=True)
+            scalar_formatter.set_scientific(False)
+            ax.yaxis.set_major_formatter(scalar_formatter)
+            ax.yaxis.set_minor_formatter(scalar_formatter)
             ax.legend(
                 self.data.keys(),
                 loc="upper left",
