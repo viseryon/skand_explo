@@ -8,6 +8,7 @@ including country and province statistics, visualizations, and data exports.
 import argparse
 import base64
 import datetime
+import itertools
 import locale
 import os
 import pickle
@@ -955,6 +956,8 @@ class Analyzer:
         # and easier access to data
 
         # first check the current save what countries players formed
+        # and make basic dict with reformations that look like this
+        # tag as key and list of tuples {'AUH': [('CRO', 1531), ('HUN', 1689)]}
         reformations = {}
         for tag in self.tags:
             tag_data = current_save_data.get(tag)
@@ -974,42 +977,51 @@ class Analyzer:
             # save current colour of the tag
             self.tags[tag]["colour"] = current_save_data[tag]["hex"]
 
+        # purely for 'income_stats' create new reformation dict
+        # that will simplify combining correct income stats
+        # dict {'BAV': {'UBV': (1444, 1448), 'BAV': (1448, 1705)}
+        # current tags as keys and previous tags with years when existed as values
+        reformations_for_income_stats = deepcopy(reformations)
+        for tag, refs in reformations_for_income_stats.items():
+            first_tag = refs[0][0]
+
+            refs.insert(0, (first_tag, self._EU4_START_DATE))
+            refs.append((tag, self.current_year))
+
+            result = {}
+            for (_, earlier_year), (later_tag, later_year) in itertools.pairwise(refs):
+                result[later_tag] = (earlier_year, later_year)
+
+            reformations_for_income_stats[tag] = result
+
+        print(reformations_for_income_stats)
+
         # algorithm to get income_stats
-        ref = deepcopy(reformations)
-        for current_tag, formation in ref.items():
+        for current_tag, formation in reformations_for_income_stats.items():
             inc_stats = {}
-            left = self._EU4_START_DATE
-            formation.append((current_tag, self.current_year))
             for save_date in self.saves:
                 if (country_data := self.saves[save_date].country_data) is None:
                     raise ValueError
 
-                for prev_tag, formation_year in formation:
+                for prev_tag, (start, end) in formation.items():
                     if save_date == self._EU4_START_DATE:
                         continue
 
-                    if save_date == self.current_year:
-                        data = {
-                            k: v
-                            for k, v in country_data[current_tag]["income_stats"].items()
-                            if int(k) > left
-                        }
-                        inc_stats.update(data)
+                    if prev_tag not in country_data:
+                        continue
 
-                    if formation_year > save_date:
-                        break
-                    if formation_year == left:
-                        break
+                    if save_date < start:
+                        continue
+
+                    if end > save_date:
+                        continue
 
                     data = {
-                        k: v
+                        int(k): v
                         for k, v in country_data[prev_tag]["income_stats"].items()
-                        if formation_year >= int(k) > left
+                        if start < int(k) <= end
                     }
                     inc_stats.update(data)
-                    left = formation_year
-
-            inc_stats = {int(k): v for k, v in inc_stats.items()}
 
             current_save_data[current_tag]["income_stats"] = inc_stats
 
@@ -1020,7 +1032,6 @@ class Analyzer:
                 country_data = self.saves[save_date].country_data
                 if country_data is None:
                     raise ValueError
-
                 for prev_tag, formation_year in formation:
                     if save_date == self._EU4_START_DATE:
                         prev_tag_data = country_data[prev_tag]
