@@ -217,6 +217,9 @@ class SkandStat:
     DEFAULT_STYLE: str = field(default="dark_background", init=False, repr=False)
     DEFAULT_EXPORT_EXTENSION: str = field(default=".png", init=False, repr=False)
 
+    def _is_income_stats(self) -> bool:
+        return self.statistic == "income_stats"
+
     def __repr__(self) -> str:
         """Return a string representation of the object for debugging.
 
@@ -387,7 +390,11 @@ class SkandStat:
             DataFrame with CAGR columns between years and for the total period.
 
         """
-        data = self.data.T
+        data = self.data
+        if self._is_income_stats() and self.save_dates:
+            dates = [1445, *self.save_dates[1:]]
+            data = data.loc[dates]
+        data = data.T
 
         min_year = data.columns.min()
         max_year = data.columns.max()
@@ -584,7 +591,8 @@ class SkandStat:
 class Analyzer:
     """Analyzer for Skanderbeg EU4 data.
 
-    Provides methods to download, process, and analyze EU4 save data, including country and province statistics.
+    Provides methods to download, process, and analyze EU4 save data, including country
+    and province statistics.
     """
 
     _EU4_START_DATE: int = 1444
@@ -995,8 +1003,6 @@ class Analyzer:
                 result[later_tag] = (earlier_year, later_year)
 
             reformations_for_income_stats[tag] = result
-
-        print(reformations_for_income_stats)
 
         # algorithm to get income_stats
         for current_tag, formation in reformations_for_income_stats.items():
